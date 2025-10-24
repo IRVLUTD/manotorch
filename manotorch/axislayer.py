@@ -44,9 +44,9 @@ class AxisAdaptiveLayer(torch.nn.Module):
             b_axis_init = torch.tensor([-1, 0, 0]).float().unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1).to(b_axis.device)
         b_axis = torch.cat((b_axis_init, b_axis), dim=1)  # (B, 16, 3)
 
-        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 16, 3))
+        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 16, 3), dim=2)
 
-        u_axis = torch.cross(l_axis, b_axis)
+        u_axis = torch.cross(l_axis, b_axis, dim=2)
 
         return (
             b_axis / torch.norm(b_axis, dim=2, keepdim=True),
@@ -86,10 +86,10 @@ class AxisLayerFK(Module):
         #    3-- 2 -- 1 -----0
         #   6 -- 5 -- 4 ----/
         #   12 - 11 - 10 --/
-        #    9-- 8 -- 7 --/ 
+        #    9-- 8 -- 7 --/
 
         Args:
-            transf (torch.Tensor): [B, 16, 4, 4] MANO'joints global transformation 
+            transf (torch.Tensor): [B, 16, 4, 4] MANO'joints global transformation
                 defined in MANO origial frame
 
         Returns:
@@ -124,7 +124,7 @@ class AxisLayerFK(Module):
         #    3-- 2 -- 1 -----0
         #   6 -- 5 -- 4 ----/
         #   12 - 11 - 10 --/
-        #    9-- 8 -- 7 --/ 
+        #    9-- 8 -- 7 --/
 
         Args:
             angles (torch.Tensor): [B, 16, 3] anatomy aligned euler angles
@@ -186,9 +186,9 @@ class AxisLayer(Module):
         b_axis = hand_joints[:, self.joints_mapping] - hand_joints[:, [i + 1 for i in self.joints_mapping]]
         b_axis = (transf[:, 1:, :3, :3].transpose(2, 3) @ b_axis.unsqueeze(-1)).squeeze(-1)
 
-        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 15, 3))
+        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 15, 3), dim=2)
 
-        u_axis = torch.cross(l_axis, b_axis)
+        u_axis = torch.cross(l_axis, b_axis, dim=2)
 
         return (
             b_axis / torch.norm(b_axis, dim=2, keepdim=True),
