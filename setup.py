@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 import warnings
 
 DEPENDENCY_PACKAGE_NAMES = [
@@ -42,7 +42,7 @@ setup(
     version="0.0.3",
     author="Jikai Wang",
     author_email="jikai.wang@utdallas.edu",
-    packages=["manotorch", "mano"],
+    packages=find_packages(exclude=("tests",)),
     python_requires=">=3.10.0",
     description="MANO pyTORCH",
     # long_description=long_description,
