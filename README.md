@@ -188,7 +188,7 @@ python scripts/simple_app.py --mode axis
 ```
 
 <p align="center">
-    <img src="doc/axis.gif", width=400>
+    <img src="doc/axis_new.gif", width=400>
 </p>
 
 To overcome the first issue,
@@ -236,7 +236,7 @@ python scripts/simple_compose.py
 ```
 
 <p align="center">
-    <img src="doc/simple_compose.gif", width=400>
+    <img src="doc/simple_compose_new.gif", width=400>
 </p>
 
 ### Anchor Interpolation
