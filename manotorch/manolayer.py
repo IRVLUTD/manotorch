@@ -1,28 +1,25 @@
 import os
 import warnings
-from collections import namedtuple
 from typing import Optional
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 
-from mano.webuser.smpl_handpca_wrapper_HAND_only import ready_arguments
+from mano.webuser.smpl_handpca_wrapper_HAND_only import ready_arguments, ready_arguments_new
 
-from .utils.geometry import (axis_angle_to_matrix, quaternion_to_axis_angle, quaternion_to_matrix)
+from .utils.geometry import axis_angle_to_matrix, quaternion_to_axis_angle, quaternion_to_matrix
 
-MANOOutput = namedtuple(
-    "MANOOutput",
-    [
-        "verts",
-        "joints",
-        "center_idx",
-        "center_joint",
-        "full_poses",
-        "betas",
-        "transforms_abs",
-    ],
-)
-MANOOutput.__new__.__defaults__ = (None,) * len(MANOOutput._fields)
+
+@dataclass
+class MANOOutput:
+    verts: torch.Tensor
+    joints: torch.Tensor
+    center_idx: Optional[int] = None
+    center_joint: Optional[torch.Tensor] = None
+    full_poses: Optional[torch.Tensor] = None
+    betas: Optional[torch.Tensor] = None
+    transforms_abs: Optional[torch.Tensor] = None
 
 
 def th_with_zeros(tensor):
@@ -68,7 +65,8 @@ class ManoLayer(torch.nn.Module):
         # load model according to side flag
         mano_assets_path = os.path.join(mano_assets_root, "models", f"MANO_{side.upper()}.pkl")  # eg.  MANO_RIGHT.pkl
         assert os.path.isfile(
-            mano_assets_path), f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
+            mano_assets_path
+        ), f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
 
         # parse and register stuff
         smpl_data = ready_arguments(mano_assets_path)
@@ -90,7 +88,7 @@ class ManoLayer(torch.nn.Module):
             hands_mean = torch.Tensor(hands_mean).unsqueeze(0)
             self.register_buffer("th_hands_mean", hands_mean)
 
-        if rot_mode == "axisang" and use_pca == True:
+        if rot_mode == "axisang" or use_pca == True:
             selected_components = hands_components[:ncomps]
             selected_components = torch.Tensor(selected_components)
             self.register_buffer("th_selected_comps", selected_components)
@@ -99,8 +97,8 @@ class ManoLayer(torch.nn.Module):
 
     def rotation_by_axisang(self, pose_coeffs):
         batch_size = pose_coeffs.shape[0]
-        hand_pose_coeffs = pose_coeffs[:, self.rot_dim:]
-        root_pose_coeffs = pose_coeffs[:, :self.rot_dim]
+        hand_pose_coeffs = pose_coeffs[:, self.rot_dim :]
+        root_pose_coeffs = pose_coeffs[:, : self.rot_dim]
         if self.use_pca:
             full_hand_pose = hand_pose_coeffs.mm(self.th_selected_comps)
         else:
@@ -208,8 +206,8 @@ class ManoLayer(torch.nn.Module):
         T = torch.matmul(G_prime_k, self.th_weights.transpose(0, 1))  # (B, 4, 4, 778)
 
         T_P_homo = torch.cat(
-            [T_P.transpose(2, 1),
-             torch.ones((batch_size, 1, B_P.shape[1]), dtype=T.dtype, device=T.device)], dim=1)
+            [T_P.transpose(2, 1), torch.ones((batch_size, 1, B_P.shape[1]), dtype=T.dtype, device=T.device)], dim=1
+        )
         T_P_homo = T_P_homo.unsqueeze(1)  # (B, 1, 4, 778)
 
         # Eq. 7 in SMPL
@@ -221,10 +219,8 @@ class ManoLayer(torch.nn.Module):
 
         # In addition to MANO reference joints we sample vertices on each finger
         # to serve as finger tips
-        if self.side == "right":
-            tips = verts[:, [744, 320, 443, 554, 671]]
-        else:
-            tips = verts[:, [744, 320, 443, 554, 671]]
+        # if self.side == "right":
+        tips = verts[:, [744, 320, 443, 554, 671]]  # align with smplx
 
         joints = torch.cat([joints, tips], 1)
 
@@ -332,22 +328,24 @@ class ManoLayer(torch.nn.Module):
         which looks much better.
         https://github.com/hassony2/handobjectconsist/blob/master/meshreg/models/manoutils.py
         """
-        close_faces = torch.Tensor([
-            [92, 38, 122],
-            [234, 92, 122],
-            [239, 234, 122],
-            [279, 239, 122],
-            [215, 279, 122],
-            [215, 122, 118],
-            [215, 118, 117],
-            [215, 117, 119],
-            [215, 119, 120],
-            [215, 120, 108],
-            [215, 108, 79],
-            [215, 79, 78],
-            [215, 78, 121],
-            [214, 215, 121],
-        ])
+        close_faces = torch.Tensor(
+            [
+                [92, 38, 122],
+                [234, 92, 122],
+                [239, 234, 122],
+                [279, 239, 122],
+                [215, 279, 122],
+                [215, 122, 118],
+                [215, 118, 117],
+                [215, 117, 119],
+                [215, 119, 120],
+                [215, 120, 108],
+                [215, 108, 79],
+                [215, 79, 78],
+                [215, 78, 121],
+                [214, 215, 121],
+            ]
+        )
         if self.side == "left":
             close_faces = close_faces[:, [2, 1, 0]]
         th_closed_faces = torch.cat([self.th_faces.clone().detach().cpu(), close_faces.long()])
