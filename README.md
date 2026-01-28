@@ -1,5 +1,9 @@
 # manotorch: MANO Pytorch
 
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB.svg)](https://docs.python.org/3.11)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.7.0-EE4C2C.svg)](https://pytorch.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900.svg)](https://developer.nvidia.com/cuda-12-8-0-download-archive)
+
 <!-- ## :spiral_notepad: Introduction -->
 
 - manotorch is a differentiable PyTorch layer that deterministically maps from pose and shape parameters to hand joints and vertices. It can be integrated into any architecture as a differentiable layer to predict hand mesh.
@@ -25,7 +29,7 @@ $ git clone https://github.com/lixiny/manotorch.git
 $ cd manotorch
 ```
 
-Install the dependencies listed in [environment.yaml](environment.yaml)
+<!-- Install the dependencies listed in [environment.yaml](environment.yaml)
 
 ```shell
 # In a new environment,
@@ -33,6 +37,35 @@ $ conda env create -f environment.yaml
 
 # Or in an existing conda environment,
 $ conda env update -f environment.yaml
+``` -->
+
+### Install dependencies
+
+- Create conda environment
+
+```shell
+$ conda create --name manotorch python=3.11 -y
+$ conda activate manotorch
+```
+
+- Install PyTorch v2.7.0 with CUDA 12.8
+
+```shell
+$ python -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+- Install chumpy
+
+```shell
+$ python -m pip install "git+https://github.com/JWRoboticsVision/chumpy.git" --no-build-isolation
+```
+
+### Install manotorch package
+
+To be able to import and use manotorch in another project, go to your `manotorch` folder and run
+
+```
+$ python -m pip install -e .
 ```
 
 ### Download MANO pickle data-structures
@@ -57,14 +90,6 @@ assets/mano
     │   └── SMPLH_male.pkl
     └── webuser
         └── ...
-```
-
-### Optional: Install manotorch package
-
-To be able to import and use manotorch in another project, go to your `manotorch` folder and run
-
-```
-$ pip install .
 ```
 
 <br />
@@ -155,7 +180,7 @@ To overcome this, in the new manotorch (>= v0.0.2),
 we firstly use the **flat** hand to calculate the twist-spread-bend axes in its canonical pose.
 Later, we can transform these basis to the **posed** hand, based on the 16 $\mathbf{SE}(3)$ transformation matrices.
 
-See [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK` for details (FK: forward kinematics).  
+See [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK` for details (FK: forward kinematics).
 Run: [scripts/simple_app.py](scripts/simple_app.py)
 
 ```shell
@@ -177,7 +202,7 @@ e.g supervise the rotation of the child frame in relation to the child's anatomi
 To overcome the second issue,
 we penalize the rotation in form of the euler angles, which is more robust to the small angle.
 
-See [manotorch/anatomy_loss.py](manotorch/anatomy_loss.py): `AnatomyConstraintLossEE` for details (EE: euler angle).  
+See [manotorch/anatomy_loss.py](manotorch/anatomy_loss.py): `AnatomyConstraintLossEE` for details (EE: euler angle).
 Run: [scripts/simple_anatomy_loss.py](scripts/simple_anatomy_loss.py) to show the pose correction.
 
 ```shell
@@ -192,7 +217,7 @@ python scripts/simple_anatomy_loss.py
 
 Based on the Anatomical Consistent Basis, we can also compose the hand from a given euler angles.
 
-See: [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK.compose` for details (FK: forward kinematics).  
+See: [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK.compose` for details (FK: forward kinematics).
 Run: [scripts/simple_compose.py](scripts/simple_compose.py), It shows how we specify the euler angles of joint on the index finger and compose the hand in a deterministic way.
 
 ```shell
@@ -218,7 +243,7 @@ python scripts/simple_compose.py
 
 These anchors derive a coarse palm vertices representation to treat contact during hand-object interaction.
 
-See [manotorch/anchorlayer.py](manotorch/anchorlayer.py): `AnchorLayer` for details.  
+See [manotorch/anchorlayer.py](manotorch/anchorlayer.py): `AnchorLayer` for details.
 Run: [scripts/simple_app.py](scripts/simple_app.py)
 
 ```shell
