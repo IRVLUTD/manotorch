@@ -69,14 +69,26 @@ class ManoLayer(torch.nn.Module):
         ), f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
 
         # parse and register stuff
-        smpl_data = ready_arguments(mano_assets_path)
-        self.register_buffer("th_betas", torch.Tensor(np.array(smpl_data["betas"].r)).unsqueeze(0))
-        self.register_buffer("th_shapedirs", torch.Tensor(np.array(smpl_data["shapedirs"].r)))
-        self.register_buffer("th_posedirs", torch.Tensor(np.array(smpl_data["posedirs"].r)))
-        self.register_buffer("th_v_template", torch.Tensor(np.array(smpl_data["v_template"].r)).unsqueeze(0))
-        self.register_buffer("th_J_regressor", torch.Tensor(np.array(smpl_data["J_regressor"].toarray())))
-        self.register_buffer("th_weights", torch.Tensor(np.array(smpl_data["weights"].r)))
-        self.register_buffer("th_faces", torch.Tensor(np.array(smpl_data["f"]).astype(np.int32)).long())
+        mano_assets_path_new = mano_assets_path.replace(".pkl", "_new.pkl")
+        if os.path.isfile(mano_assets_path_new):
+            smpl_data = ready_arguments_new(mano_assets_path_new)
+            self.register_buffer("th_betas", torch.Tensor(smpl_data["betas"]).unsqueeze(0))
+            self.register_buffer("th_shapedirs", torch.Tensor(smpl_data["shapedirs"]))
+            self.register_buffer("th_posedirs", torch.Tensor(smpl_data["posedirs"]))
+            self.register_buffer("th_v_template", torch.Tensor(smpl_data["v_template"]).unsqueeze(0))
+            self.register_buffer("th_J_regressor", torch.Tensor(smpl_data["J_regressor"].toarray()))
+            self.register_buffer("th_weights", torch.Tensor(smpl_data["weights"]))
+            self.register_buffer("th_faces", torch.Tensor(np.array(smpl_data["f"]).astype(np.int32)).long())
+        else:
+            smpl_data = ready_arguments(mano_assets_path)
+            self.register_buffer("th_betas", torch.Tensor(np.array(smpl_data["betas"].r)).unsqueeze(0))
+            self.register_buffer("th_shapedirs", torch.Tensor(np.array(smpl_data["shapedirs"].r)))
+            self.register_buffer("th_posedirs", torch.Tensor(np.array(smpl_data["posedirs"].r)))
+            self.register_buffer("th_v_template", torch.Tensor(np.array(smpl_data["v_template"].r)).unsqueeze(0))
+            self.register_buffer("th_J_regressor", torch.Tensor(np.array(smpl_data["J_regressor"].toarray())))
+            self.register_buffer("th_weights", torch.Tensor(np.array(smpl_data["weights"].r)))
+            self.register_buffer("th_faces", torch.Tensor(np.array(smpl_data["f"]).astype(np.int32)).long())
+
 
         kintree_table = smpl_data["kintree_table"]
         self.kintree_parents = list(kintree_table[0].tolist())
