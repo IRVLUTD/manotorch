@@ -67,12 +67,24 @@ def ready_arguments(fname_or_dict, posekey4vposed="pose"):
 def ready_arguments_new(fname_or_dict, posekey4vposed="pose"):
     import numpy as np
     import pickle
-    from mano.webuser.posemapper import posemap
+    import cv2
 
     if not isinstance(fname_or_dict, dict):
         dd = pickle.load(open(fname_or_dict, "rb"), encoding="latin1")
     else:
         dd = fname_or_dict
+
+    def lrotmin_np(p):
+        p = p.ravel()[3:]
+        return np.concatenate(
+            [(cv2.Rodrigues(np.array(pp))[0] - np.eye(3)).ravel() for pp in p.reshape((-1, 3))]
+        ).ravel()
+
+    def posemap(s):
+        if s == "lrotmin":
+            return lrotmin_np
+        else:
+            raise Exception("Unknown posemapping: %s" % (str(s),))
 
     want_shapemodel = "shapedirs" in dd
     nposeparms = dd["kintree_table"].shape[1] * 3
