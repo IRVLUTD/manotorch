@@ -1,270 +1,115 @@
 # manotorch: MANO Pytorch
 
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB.svg)](https://docs.python.org/3.11)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.7.0-EE4C2C.svg)](https://pytorch.org/)
-[![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900.svg)](https://developer.nvidia.com/cuda-12-8-0-download-archive)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://docs.python.org/3.12)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.11.0-EE4C2C.svg)](https://pytorch.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-12.6-76B900.svg)](https://developer.nvidia.com/cuda-12-6-0-download-archive)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-<!-- ## :spiral_notepad: Introduction -->
+> [!NOTE]
+> This repository is an optimized fork of [lixiny/manotorch](https://github.com/lixiny/manotorch), maintained by [IRVLUTD](https://github.com/IRVLUTD) for MANO hand research.
+> The original design and implementation are the work of the upstream authors. All changes made in this fork are listed in [CHANGELOG.md](CHANGELOG.md).
 
-- manotorch is a differentiable PyTorch layer that deterministically maps from pose and shape parameters to hand joints and vertices. It can be integrated into any architecture as a differentiable layer to predict hand mesh.
+manotorch is a differentiable PyTorch layer that deterministically maps MANO pose and shape parameters to hand joints and vertices. It can be integrated into any architecture as a differentiable layer to predict hand meshes.
 
-- manotorch is compatible with Yana's [manopth](https://github.com/hassony2/manopth) package and Omid's [MANO](https://github.com/otaheri/MANO) package, allowing for interchangeability between them. See example: [test_compatibility](scripts/test_compatibility.ipynb).
+- Compatible with Yana's [manopth](https://github.com/hassony2/manopth) and Omid's [MANO](https://github.com/otaheri/MANO) packages, see [test_compatibility](scripts/test_compatibility.ipynb).
+- Extends manopth with the Anatomical Consistent Basis, Anatomy Loss, hand composition from Euler angles, and anchor interpolation, for both the left and right hand.
 
-- manotorch is modified from the original [manopth](https://github.com/hassony2/manopth) with the following new features:
-  - [Anatomical Consistent Basis](#anatomical-consistent-basis)
-  - [Anatomy Loss](#anatomy-loss)
-  - [Composing the Hand](#composing-the-hand)
-  - [Anchor Interpolation](#anchor-interpolation)
-- anatomy basis and loss can support both the **left and right hand** :open_hands:!
+## Installation
 
-<br />
-<br />
-
-## :rocket: Installation
-
-### Get code and dependencies
+### Get the code
 
 ```shell
-$ git clone https://github.com/lixiny/manotorch.git
-$ cd manotorch
+git clone https://github.com/IRVLUTD/manotorch.git
+cd manotorch
 ```
 
-<!-- Install the dependencies listed in [environment.yaml](environment.yaml)
+### Option 1: uv (recommended)
+
+[uv](https://docs.astral.sh/uv/) creates a `.venv/` with Python 3.12 and PyTorch 2.11.0 (CUDA 12.6), using the exact versions locked in [uv.lock](uv.lock). manotorch is installed in editable mode together with the development tools (pytest, ruff):
 
 ```shell
-# In a new environment,
-$ conda env create -f environment.yaml
+uv sync                  # core dependencies + dev tools
+uv sync --extra vis      # + open3d, pyvista, trimesh, tqdm for the demo scripts
+```
 
-# Or in an existing conda environment,
-$ conda env update -f environment.yaml
-``` -->
+Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`.
 
-### Install dependencies
+### Option 2: existing environment
 
-- Create conda environment
+Install [PyTorch](https://pytorch.org/get-started/locally/) for your CUDA version first, then install manotorch with pip (or `uv pip`):
 
 ```shell
-$ conda create --name manotorch python=3.11 -y
-$ conda activate manotorch
+python -m pip install -e .            # core dependencies only
+python -m pip install -e ".[vis]"     # + open3d, pyvista, trimesh, tqdm for the demo scripts
 ```
 
-- Install PyTorch v2.7.0 with CUDA 12.8
+To use manotorch as a dependency of another project: `python -m pip install "git+https://github.com/IRVLUTD/manotorch.git"`.
 
-```shell
-$ python -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
-```
+manotorch is configured entirely through [pyproject.toml](pyproject.toml), so a regular `pip install` works without any extra build flags. chumpy is not required.
 
-- Install chumpy
+### Download the MANO model
 
-```shell
-$ python -m pip install "git+https://github.com/JWRoboticsVision/chumpy.git" --no-build-isolation
-```
+1. Register on the [MANO website](https://mano.is.tue.mpg.de/) and download _Models & Code_ (`mano_v*_*.zip`).
+   Everything in this download is covered by the [MANO license](https://mano.is.tue.mpg.de/license), not by this repository's license.
+2. Unzip it and copy the contents of `mano_v*_*/` into `assets/mano/` (or pass another location through `mano_assets_root`). Only the two model files are used:
 
-### Install manotorch package
+   ```
+   assets/mano
+   └── models
+       ├── MANO_LEFT.pkl
+       └── MANO_RIGHT.pkl
+   ```
 
-To be able to import and use manotorch in another project, go to your `manotorch` folder and run
+   The original pickles are read directly with numpy; chumpy is not needed.
 
-```
-$ python -m pip install -e .
-```
+The MANO model files must never be committed to this repository; `assets/mano/` is git-ignored.
 
-### Download MANO pickle data-structures
-
-- Visit [MANO website](http://mano.is.tue.mpg.de/)
-- Create an account by clicking _Sign Up_ and provide your information
-- Download Models and Code (the downloaded file should have the format `mano_v*_*.zip`). Note that all code and data from this download falls under the [MANO license](http://mano.is.tue.mpg.de/license).
-- unzip and copy the contents in `mano_v*_*/` folder to the `assets/mano/` folder
-- Your `assets/mano` folder structure should look like this:
-
-```
-assets/mano
-    ├── info.txt
-    ├── __init__.py
-    ├── LICENSE.txt
-    ├── models
-    │   ├── info.txt
-    │   ├── LICENSE.txt
-    │   ├── MANO_LEFT.pkl
-    │   ├── MANO_RIGHT.pkl
-    │   ├── SMPLH_female.pkl
-    │   └── SMPLH_male.pkl
-    └── webuser
-        └── ...
-```
-
-<br />
-<br />
-
-## :plate_with_cutlery: Usage
-
-we provide a simple code snippet to demonstrate the minimal usage.
+## Usage
 
 ```python
 import torch
 from manotorch.manolayer import ManoLayer, MANOOutput
 
-# Select number of principal components for pose space
-ncomps = 15
-
-# initialize layers
-mano_layer = ManoLayer(use_pca=True, flat_hand_mean=False, ncomps=ncomps)
+ncomps = 15  # number of PCA components for the pose space
+mano_layer = ManoLayer(side="right", use_pca=True, flat_hand_mean=False, ncomps=ncomps, center_idx=0)
 
 batch_size = 2
-# Generate random shape parameters
 random_shape = torch.rand(batch_size, 10)
-# Generate random pose parameters, including 3 values for global axis-angle rotation
-random_pose = torch.rand(batch_size, 3 + ncomps)
+random_pose = torch.rand(batch_size, 3 + ncomps)  # 3 values for the global axis-angle rotation
 
-# The mano_layer's output contains:
-"""
-MANOOutput = namedtuple(
-    "MANOOutput",
-    [
-        "verts",
-        "joints",
-        "center_idx",
-        "center_joint",
-        "full_poses",
-        "betas",
-        "transforms_abs",
-    ],
-)
-"""
-# forward mano layer
 mano_output: MANOOutput = mano_layer(random_pose, random_shape)
 
-# retrieve 778 vertices, 21 joints and 16 SE3 transforms of each articulation
-# verts and joints in meters.
-verts = mano_output.verts  # (B, 778, 3), root(center_joint) relative
-joints = mano_output.joints  # (B, 21, 3), root relative
-transforms_abs = mano_output.transforms_abs  # (B, 16, 4, 4), root relative
+# In meters, relative to joint `center_idx` (no centering when center_idx is None)
+verts = mano_output.verts                    # (B, 778, 3)
+joints = mano_output.joints                  # (B, 21, 3)
+transforms_abs = mano_output.transforms_abs  # (B, 16, 4, 4)
 ```
-
-### Advanced Usage
 
 | [Visualize](scripts/simple_app.py) | [Compose Hand](scripts/simple_compose.py) | [Error Correction](scripts/simple_anatomy_loss.py) |
 | :--------------------------------: | :---------------------------------------: | :------------------------------------------------: |
-|         ![](doc/axis.gif)          |        ![](doc/simple_compose.gif)        |            ![](doc/pose_correction.gif)            |
+|       ![](doc/axis_new.gif)        |      ![](doc/simple_compose_new.gif)      |            ![](doc/pose_correction.gif)            |
 
-<br />
-<br />
+Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatomical-consistent-basis), [Anatomy Loss](README.old.md#anatomy-loss), [Composing the Hand](README.old.md#composing-the-hand) and [Anchor Interpolation](README.old.md#anchor-interpolation) is kept in [README.old.md](README.old.md) until it is rewritten for this fork.
 
-## :gift: New Features
+## License
 
-### Anatomical Consistent Basis
+- The manotorch code is licensed under the [GNU General Public License v3.0](LICENSE), inherited from upstream [manotorch](https://github.com/lixiny/manotorch) and [manopth](https://github.com/hassony2/manopth). Redistributed or modified versions must remain under GPL-3.0.
+- The files in [`mano/webuser/`](mano/webuser) are part of the official MANO release by the Max Planck Gesellschaft. They are **not** covered by GPL-3.0; they are subject to the [MANO license](https://mano.is.tue.mpg.de/license) (non-commercial research use only), as stated in their file headers. manotorch no longer uses them, and they are not included in the installed package.
+- The MANO model files (`MANO_*.pkl`) are subject to the MANO license and are not distributed with this repository.
+- Third-party code included in manotorch keeps its original notices:
+  - [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py): adapted from [PyTorch3D](https://github.com/facebookresearch/pytorch3d) (BSD 3-Clause).
+  - [`manotorch/utils/quatutils.py`](manotorch/utils/quatutils.py): parts adapted from [Ceres Solver](https://github.com/ceres-solver/ceres-solver) (BSD 3-Clause).
+  - [`manotorch/utils/rodrigues.py`](manotorch/utils/rodrigues.py): reuses code from [pytorch_HMR](https://github.com/MandyMo/pytorch_HMR).
 
-The original MANO model is driven by a kinematic tree with 16 joints, where each joint’s rotation is represented in
-the form of axis-angle. To represent the joint rotation in a three-dimensional
-Euclidean space, we need to find an orthogonal basis (consists of three orthogonal axes) that describes the rotation.
-Apparently, there have infinity choices of the orthogonal basis. For example, the original MANO model adopts the
-same orthogonal basis as the wrist for all of its 16 joints.
+## Acknowledgements
 
-We seek to find a basis whose three axes can describe three independent hand motions that satisfy the hand
-anatomy. Therefore we can decompose the joint rotation w.r.t. this basis and penalize the abnormal
-pose on that joint.
+This fork builds on [manotorch](https://github.com/lixiny/manotorch) by Lixin Yang and contributors, which in turn is modified from [manopth](https://github.com/hassony2/manopth) by Yana Hasson. We thank the authors of [MANO](https://mano.is.tue.mpg.de/), [PyTorch3D](https://github.com/facebookresearch/pytorch3d), [Ceres Solver](https://github.com/ceres-solver/ceres-solver) and [pytorch_HMR](https://github.com/MandyMo/pytorch_HMR).
 
-<p align="center">
-    <img src="doc/anatomical_consistent_basis.jpg", alt="capture">
-</p>
+## Citation
 
-### Anatomy Loss
+If you find manotorch useful in your research, please cite CPF, where manotorch was originally developed:
 
-In our ICCV2021 work [CPF](https://lixiny.github.io/CPF/), we penalize the abnormal poses by projecting the rotation axis of _axis-angle_ into three independent axes, and then penalize the abnormal axial components on that joint.
-This is a effective heuristic to avoid the abnormal pose, but it is still not a perfect solution, since:
-
-- First, the twist-spread-bend axes are calculated from the **posed** hand (vs unposed hand in its canonical pose).
-  In this case, if the hand already has a largely abnormal pose, these three axes will be abnormal as well, resulting the anatomical loss in a meaningless way.
-- Second, when the scalar angle of _axis-angle_ is close to zero, the rotation axis is not reliable to describe the rotation.
-
-To overcome this, in the new manotorch (>= v0.0.2),
-we firstly use the **flat** hand to calculate the twist-spread-bend axes in its canonical pose.
-Later, we can transform these basis to the **posed** hand, based on the 16 $\mathbf{SE}(3)$ transformation matrices.
-
-See [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK` for details (FK: forward kinematics).
-Run: [scripts/simple_app.py](scripts/simple_app.py)
-
-```shell
-python scripts/simple_app.py --mode axis
-```
-
-<p align="center">
-    <img src="doc/axis_new.gif", width=400>
-</p>
-
-To overcome the first issue,
-For each joint rotation,
-we decompose it in any pose into the rotations of the child frame in relation to the child's anatomical consistent basis
-and the rotation of the the child's anatomical consistent basis in relation to the parent's predefined (MANO) coordinate basis.
-The latter rotation is independent of the pose of hand and is thus solved only once, for the zero pose and mean shape, it can then be used as a fixed value (denoted as `TMPL_R_p_a` in the AxisLayerFK module).
-Therefore, we only need to penalize the former rotation, which is more reliable.
-e.g supervise the rotation of the child frame in relation to the child's anatomical consistent basis to prevent abnormal twisting rotations (e.g., rotations around the `twist` (1,0,0) axis).
-
-To overcome the second issue,
-we penalize the rotation in form of the euler angles, which is more robust to the small angle.
-
-See [manotorch/anatomy_loss.py](manotorch/anatomy_loss.py): `AnatomyConstraintLossEE` for details (EE: euler angle).
-Run: [scripts/simple_anatomy_loss.py](scripts/simple_anatomy_loss.py) to show the pose correction.
-
-```shell
-python scripts/simple_anatomy_loss.py
-```
-
-<p align="center">
-    <img src="doc/pose_correction.gif", width=400>
-</p>
-
-### Composing the Hand
-
-Based on the Anatomical Consistent Basis, we can also compose the hand from a given euler angles.
-
-See: [manotorch/axislayer.py](manotorch/axislayer.py): `AxisLayerFK.compose` for details (FK: forward kinematics).
-Run: [scripts/simple_compose.py](scripts/simple_compose.py), It shows how we specify the euler angles of joint on the index finger and compose the hand in a deterministic way.
-
-```shell
-#   transform order of right hand
-#         15-14-13-\
-#                   \
-#*   3-- 2 -- 1 -----0   < NOTE: demo on this finger
-#   6 -- 5 -- 4 ----/
-#   12 - 11 - 10 --/
-#    9-- 8 -- 7 --/
-
-#  the ID: 1 joints have been rotated by pi/6 around spread-axis, and pi/2 around bend-axis
-#  the ID: 2, 3 joints have been rotated by pi/2 around bend-axis
-
-python scripts/simple_compose.py
-```
-
-<p align="center">
-    <img src="doc/simple_compose_new.gif", width=400>
-</p>
-
-### Anchor Interpolation
-
-These anchors derive a coarse palm vertices representation to treat contact during hand-object interaction.
-
-See [manotorch/anchorlayer.py](manotorch/anchorlayer.py): `AnchorLayer` for details.
-Run: [scripts/simple_app.py](scripts/simple_app.py)
-
-```shell
-python scripts/simple_app.py --mode anchor
-```
-
-<p align="center">
-    <img src="doc/anchor.jpg", height=300>
-    <img src="doc/anchor.gif", width=400>
-</p>
-
-<br />
-<br />
-
-## :thumbsup: Citation
-
-If you find the manotorch useful in your research,
-please consider citing CPF,
-where the manotorch is originally developed:
-
-```
+```bibtex
 @inproceedings{yang2021cpf,
     title = {{CPF}: Learning a Contact Potential Field to Model the Hand-Object Interaction},
     author = {Yang, Lixin and Zhan, Xinyu and Li, Kailin and Xu, Wenqiang and Li, Jiefeng and Lu, Cewu},
@@ -275,8 +120,7 @@ where the manotorch is originally developed:
 
 and the original MANO publication:
 
-```
-
+```bibtex
 @article{MANO:SIGGRAPHASIA:2017,
     title = {Embodied Hands: Modeling and Capturing Hands and Bodies Together},
     author = {Romero, Javier and Tzionas, Dimitrios and Black, Michael J.},
@@ -287,5 +131,4 @@ and the original MANO publication:
     url = {http://doi.acm.org/10.1145/3130800.3130883},
     month_numeric = {11}
 }
-
 ```

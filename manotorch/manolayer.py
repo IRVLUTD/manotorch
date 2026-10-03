@@ -6,9 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from mano.webuser.smpl_handpca_wrapper_HAND_only import ready_arguments, ready_arguments_new
-
 from .utils.geometry import axis_angle_to_matrix, quaternion_to_axis_angle, quaternion_to_matrix
+from .utils.mano_io import load_mano_pickle
 
 
 @dataclass
@@ -32,7 +31,6 @@ def th_with_zeros(tensor):
 
 
 class ManoLayer(torch.nn.Module):
-
     def __init__(
         self,
         rot_mode: str = "axisang",
@@ -64,31 +62,19 @@ class ManoLayer(torch.nn.Module):
 
         # load model according to side flag
         mano_assets_path = os.path.join(mano_assets_root, "models", f"MANO_{side.upper()}.pkl")  # eg.  MANO_RIGHT.pkl
-        assert os.path.isfile(
-            mano_assets_path
-        ), f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
+        assert os.path.isfile(mano_assets_path), (
+            f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
+        )
 
         # parse and register stuff
-        mano_assets_path_new = mano_assets_path.replace(".pkl", "_new.pkl")
-        if os.path.isfile(mano_assets_path_new):
-            smpl_data = ready_arguments_new(mano_assets_path_new)
-            self.register_buffer("th_betas", torch.Tensor(smpl_data["betas"]).unsqueeze(0))
-            self.register_buffer("th_shapedirs", torch.Tensor(smpl_data["shapedirs"]))
-            self.register_buffer("th_posedirs", torch.Tensor(smpl_data["posedirs"]))
-            self.register_buffer("th_v_template", torch.Tensor(smpl_data["v_template"]).unsqueeze(0))
-            self.register_buffer("th_J_regressor", torch.Tensor(smpl_data["J_regressor"].toarray()))
-            self.register_buffer("th_weights", torch.Tensor(smpl_data["weights"]))
-            self.register_buffer("th_faces", torch.Tensor(np.array(smpl_data["f"]).astype(np.int32)).long())
-        else:
-            smpl_data = ready_arguments(mano_assets_path)
-            self.register_buffer("th_betas", torch.Tensor(np.array(smpl_data["betas"].r)).unsqueeze(0))
-            self.register_buffer("th_shapedirs", torch.Tensor(np.array(smpl_data["shapedirs"].r)))
-            self.register_buffer("th_posedirs", torch.Tensor(np.array(smpl_data["posedirs"].r)))
-            self.register_buffer("th_v_template", torch.Tensor(np.array(smpl_data["v_template"].r)).unsqueeze(0))
-            self.register_buffer("th_J_regressor", torch.Tensor(np.array(smpl_data["J_regressor"].toarray())))
-            self.register_buffer("th_weights", torch.Tensor(np.array(smpl_data["weights"].r)))
-            self.register_buffer("th_faces", torch.Tensor(np.array(smpl_data["f"]).astype(np.int32)).long())
-
+        smpl_data = load_mano_pickle(mano_assets_path)
+        self.register_buffer("th_betas", torch.zeros(1, smpl_data["shapedirs"].shape[-1]))
+        self.register_buffer("th_shapedirs", torch.Tensor(smpl_data["shapedirs"]))
+        self.register_buffer("th_posedirs", torch.Tensor(smpl_data["posedirs"]))
+        self.register_buffer("th_v_template", torch.Tensor(smpl_data["v_template"]).unsqueeze(0))
+        self.register_buffer("th_J_regressor", torch.Tensor(smpl_data["J_regressor"]))
+        self.register_buffer("th_weights", torch.Tensor(smpl_data["weights"]))
+        self.register_buffer("th_faces", torch.from_numpy(smpl_data["f"].astype(np.int64)))
 
         kintree_table = smpl_data["kintree_table"]
         self.kintree_parents = list(kintree_table[0].tolist())
