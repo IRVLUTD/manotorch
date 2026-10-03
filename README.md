@@ -102,6 +102,10 @@ non-zero betas a left hand is not the mirror of the right hand with the same bet
 - Keep the default to consume data fitted with the official model, e.g. with manopth or smplx (HO-Cap, ...).
 - Pass `fix_left_shapedirs=True` for new work where both hands share betas, or where poses are mirrored between hands.
 
+The anatomy aligned Euler angles of `AxisLayerFK` (twist, spread, bend) follow the same convention for both hands:
+a left-hand pose mirrored from a right-hand pose gives the same angles, `compose()` takes them back for either hand,
+and the `AnatomyConstraintLossEE` limits apply in the same anatomical direction.
+
 ### Speed
 
 The layer has no host-device synchronization and compiles into a single graph. On small batches the eager GPU time is

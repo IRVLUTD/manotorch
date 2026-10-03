@@ -89,6 +89,12 @@ class AxisLayerFK(Module):
         # rotation from each template parent's anatomy frame to its template child's anatomy frame
         Ra_par_tmplchd = self.TMPL_R_p_a[:, parent].transpose(2, 3) @ self.TMPL_R_p_a
         self.register_buffer("_Ra_par_tmplchd", Ra_par_tmplchd, persistent=False)
+        # The left-hand anatomy frames are right-handed, so a motion mirrored from the right hand turns the opposite
+        # way around the twist and spread axes. Angles are reported in the right-hand convention: R -> P R P with
+        # P = diag(-1, -1, 1), which negates the twist and spread angles. Mirrored poses then give equal angles.
+        sign = torch.tensor([-1.0, -1.0, 1.0]) if side == "left" else torch.ones(3)
+        self.register_buffer("_angle_sign", sign, persistent=False)
+        self.register_buffer("_rot_sign", sign[:, None] * sign[None, :], persistent=False)
 
     def forward(self, transf):
         """extract the anatomy aligned euler angles from the MANO global transformation
@@ -107,13 +113,15 @@ class AxisLayerFK(Module):
         Returns:
             T_g_a: torch.Tensor: [B, 16, 4, 4] MANO's joints global transformation defined in  anatomy aligned frame;
             Ra_tmplchd_chd: torch.Tensor: [B, 16, 3, 3], anatomy aligned rotation matrix;
-            ee_a_tmplchd_chd: torch.Tensor: [B, 16, 3] anatomy aligned euler angle;
+            ee_a_tmplchd_chd: torch.Tensor: [B, 16, 3] anatomy aligned euler angle (twist, spread, bend);
+            For the left hand, the rotations and angles follow the right-hand convention: mirrored poses of the two
+            hands give the same angles, and compose() takes them back.
         """
         R_g_a = transf[:, :, :3, :3] @ self.TMPL_R_p_a  # (B, 16, 3, 3)
         T_g_a = _homogeneous(R_g_a, transf[:, :, :3, 3:])  # (B, 16, 4, 4)
 
         Ra_par_chd = R_g_a.index_select(1, self._parent).transpose(2, 3) @ R_g_a  # (B, 16, 3, 3)
-        Ra_tmplchd_chd = self._Ra_par_tmplchd.transpose(2, 3) @ Ra_par_chd
+        Ra_tmplchd_chd = (self._Ra_par_tmplchd.transpose(2, 3) @ Ra_par_chd) * self._rot_sign
 
         ee_a_tmplchd_chd = matrix_to_euler_angles(Ra_tmplchd_chd, convention="XYZ")  # (B, 16, 3)
         return T_g_a, Ra_tmplchd_chd, ee_a_tmplchd_chd
@@ -129,14 +137,13 @@ class AxisLayerFK(Module):
         #    9-- 8 -- 7 --/
 
         Args:
-            angles (torch.Tensor): [B, 16, 3] anatomy aligned euler angles; not modified.
+            angles (torch.Tensor): [B, 16, 3] anatomy aligned euler angles, in the right-hand convention for both
+                hands (as returned by forward); not modified.
 
         Returns:
             torch.Tensor: mano pose (\theta) in the MANO original frame
         """
-        ee_tmplchd_chd = angles  # (B, 16, 3)
-        if self.side == "left":
-            ee_tmplchd_chd = torch.cat((-angles[..., :2], angles[..., 2:]), dim=-1)
+        ee_tmplchd_chd = angles * self._angle_sign  # (B, 16, 3)
 
         Ra_tmplchd_chd = euler_angles_to_matrix(ee_tmplchd_chd, convention="XYZ")  # (B, 16, 3, 3)
         Ra_par_chd = self._Ra_par_tmplchd @ Ra_tmplchd_chd  # (B, 16, 3, 3)

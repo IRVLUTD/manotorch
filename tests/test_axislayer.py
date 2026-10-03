@@ -6,17 +6,14 @@ from manotorch.anatomy_loss import AnatomyConstraintLossEE
 from manotorch.anchorlayer import AnchorLayer
 from manotorch.axislayer import AxisLayerFK
 from manotorch.manolayer import ManoLayer
+from manotorch.utils.geometry import euler_angles_to_matrix
 
 pytestmark = requires_mano
 
 
 @pytest.mark.parametrize("side", ["right", "left"])
 def test_compose_inverts_forward(mano_root, side):
-    """compose(euler angles of a pose) gives back the same joint rotations (the global rotation is not encoded).
-
-    For the left hand, forward() returns the twist and spread angles with the opposite sign of the convention
-    compose() expects (the right-hand one), so they are flipped before composing.
-    """
+    """compose(euler angles of a pose) gives back the same joint rotations (the global rotation is not encoded)."""
     layer = ManoLayer(side=side, mano_assets_root=mano_root).double()
     fk = AxisLayerFK(side=side, mano_assets_root=mano_root).double()
     pose = torch.randn(16, 48, dtype=torch.float64) * 0.5
@@ -25,10 +22,22 @@ def test_compose_inverts_forward(mano_root, side):
 
     T_g_a, R, ee = fk(out.transforms_abs)
     assert T_g_a.shape == (16, 16, 4, 4) and R.shape == (16, 16, 3, 3) and ee.shape == (16, 16, 3)
-    if side == "left":
-        ee = ee * torch.tensor([-1.0, -1.0, 1.0], dtype=torch.float64)
+    # the template axes are float32, so R is orthonormal to ~1e-7 only
+    torch.testing.assert_close(euler_angles_to_matrix(ee, "XYZ"), R, atol=1e-6, rtol=0)
     composed = fk.compose(ee)
     torch.testing.assert_close(layer(composed.reshape(16, 48)).transforms_abs, out.transforms_abs, atol=1e-6, rtol=0)
+
+
+def test_forward_gives_equal_angles_for_mirrored_poses(mano_root):
+    """A left-hand pose mirrored from a right-hand pose has the same anatomy aligned euler angles."""
+    pose = torch.randn(16, 48, dtype=torch.float64) * 0.5
+    mirrored = pose * torch.tensor([1.0, -1.0, -1.0], dtype=torch.float64).repeat(16)
+    angles = {}
+    for side, p in (("right", pose), ("left", mirrored)):
+        layer = ManoLayer(side=side, mano_assets_root=mano_root).double()
+        fk = AxisLayerFK(side=side, mano_assets_root=mano_root).double()
+        angles[side] = fk(layer(p).transforms_abs)[2]
+    torch.testing.assert_close(angles["left"][:, 1:], angles["right"][:, 1:], atol=1e-6, rtol=0)
 
 
 def test_compose_mirrors_between_sides(mano_root):
