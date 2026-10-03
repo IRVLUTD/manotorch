@@ -26,6 +26,7 @@ Apart from the removed deprecated code and the `AnchorLayer` default path listed
 - `AxisLayerFK.compose()` no longer modifies its input tensor for the left hand; `AxisLayerFK` and `AxisAdaptiveLayer` build their constants once, as buffers.
 - Removed the deprecated `AxisLayer` class and the deprecated `manotorch/utils/quatutils.py` and `manotorch/utils/rodrigues.py`, and with them the `deprecation` dependency.
 - Anchor definitions moved into the package (`manotorch/assets/anchor`); `AnchorLayer()` loads them by default (its `anchor_root` default changed from `"assets/anchor"` to `None`), so it works from any directory and from a regular (non-editable) install.
+- Removed the bundled official MANO code (`mano/webuser`, MANO license) and `tools/clean_ch.py`, both unused since the numpy-only loader.
 - Added a pytest suite (`tests/`) that checks `ManoLayer` against an independent float64 MANO implementation, the npz/pickle loaders, `AxisLayerFK` and the left/right mirror symmetry.
 
 Measured on an RTX 4090 with PyTorch 2.7 (shared machine, so absolute times are noisy):

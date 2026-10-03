@@ -133,12 +133,9 @@ Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatom
 ## License
 
 - The manotorch code is licensed under the [GNU General Public License v3.0](LICENSE), inherited from upstream [manotorch](https://github.com/lixiny/manotorch) and [manopth](https://github.com/hassony2/manopth). Redistributed or modified versions must remain under GPL-3.0.
-- The files in [`mano/webuser/`](mano/webuser) are part of the official MANO release by the Max Planck Gesellschaft. They are **not** covered by GPL-3.0; they are subject to the [MANO license](https://mano.is.tue.mpg.de/license) (non-commercial research use only), as stated in their file headers. manotorch no longer uses them, and they are not included in the installed package.
-- The MANO model files (`MANO_*.pkl`) are subject to the MANO license and are not distributed with this repository.
-- Third-party code included in manotorch keeps its original notices:
-  - [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py): adapted from [PyTorch3D](https://github.com/facebookresearch/pytorch3d) (BSD 3-Clause).
-  - [`manotorch/utils/quatutils.py`](manotorch/utils/quatutils.py): parts adapted from [Ceres Solver](https://github.com/ceres-solver/ceres-solver) (BSD 3-Clause).
-  - [`manotorch/utils/rodrigues.py`](manotorch/utils/rodrigues.py): reuses code from [pytorch_HMR](https://github.com/MandyMo/pytorch_HMR).
+- This repository no longer contains any file of the official MANO release (the `mano/webuser` code bundled by upstream was removed).
+- The MANO model files (`MANO_*.pkl`, and the `.npz` files converted from them) are subject to the MANO license and are not distributed with this repository.
+- Third-party code included in manotorch keeps its original notice: [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py) is adapted from [PyTorch3D](https://github.com/facebookresearch/pytorch3d) (BSD 3-Clause).
 
 ## Acknowledgements
 
