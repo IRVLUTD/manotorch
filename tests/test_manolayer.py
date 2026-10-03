@@ -172,3 +172,11 @@ def test_cuda_matches_cpu(mano_root):
     gpu = layer.cuda()(pose.cuda(), betas.cuda())
     torch.testing.assert_close(gpu.verts.cpu(), cpu.verts, atol=1e-5, rtol=0)
     torch.testing.assert_close(gpu.transforms_abs.cpu(), cpu.transforms_abs, atol=1e-5, rtol=0)
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_fingertips_match_smplx(mano_root, side):
+    """Fingertips are the MANO vertices smplx uses (smplx/vertex_ids.py), at the SNAP tip joints 4, 8, 12, 16, 20."""
+    smplx_tips = {"thumb": 744, "index": 320, "middle": 443, "ring": 554, "pinky": 671}
+    out = ManoLayer(side=side, mano_assets_root=mano_root)(torch.randn(4, 48) * 0.5)
+    torch.testing.assert_close(out.joints[:, [4, 8, 12, 16, 20]], out.verts[:, list(smplx_tips.values())])
