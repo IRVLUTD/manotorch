@@ -20,7 +20,6 @@ classifiers = [
 dependencies = [
     "numpy",
     "torch>=2.0",
-    "deprecation",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +34,9 @@ Upstream = "https://github.com/lixiny/manotorch"
 
 [tool.setuptools.packages.find]
 include = ["manotorch*"]
+
+[tool.setuptools.package-data]
+manotorch = ["assets/anchor/*"]
 
 [tool.uv]
 # Pins the development environment only; the published package requires torch>=2.0.

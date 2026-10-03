@@ -32,7 +32,7 @@ uv sync                  # core dependencies + dev tools
 uv sync --extra vis      # + open3d, pyvista, trimesh, tqdm for the demo scripts
 ```
 
-Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`.
+Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`. Run the tests with `uv run pytest` (they need the MANO model files, see below; set `MANO_ASSETS_ROOT` if they are not under `assets/mano`).
 
 ### Option 2: existing environment
 
@@ -60,7 +60,15 @@ manotorch is configured entirely through [pyproject.toml](pyproject.toml), so a 
        └── MANO_RIGHT.pkl
    ```
 
-   The original pickles are read directly with numpy; chumpy is not needed.
+   The original pickles are read directly with numpy, through a restricted unpickler that refuses anything but the
+   numpy, chumpy and scipy data a MANO file contains; chumpy and scipy are not needed.
+3. (Optional) Convert them to `.npz` files, which load without pickle and faster. `ManoLayer` uses `MANO_{SIDE}.npz`
+   when it exists and falls back to `MANO_{SIDE}.pkl`; both give bit-identical outputs. The converter needs scipy:
+
+   ```shell
+   uv run --with scipy python tools/mano_pkl_to_npz.py --input_file assets/mano/models/MANO_RIGHT.pkl
+   uv run --with scipy python tools/mano_pkl_to_npz.py --input_file assets/mano/models/MANO_LEFT.pkl
+   ```
 
 The MANO model files must never be committed to this repository; `assets/mano/` is git-ignored.
 
@@ -84,6 +92,37 @@ verts = mano_output.verts                    # (B, 778, 3)
 joints = mano_output.joints                  # (B, 21, 3)
 transforms_abs = mano_output.transforms_abs  # (B, 16, 4, 4)
 ```
+
+### Left hand
+
+`ManoLayer(side="left")` reproduces the official left-hand model by default. That model ships the right-hand shape
+blend shapes without mirroring their x component ([smplx#48](https://github.com/vchoutas/smplx/issues/48)), so with
+non-zero betas a left hand is not the mirror of the right hand with the same betas. Joint rotations are not affected.
+
+- Keep the default to consume data fitted with the official model, e.g. with manopth or smplx (HO-Cap, ...).
+- Pass `fix_left_shapedirs=True` for new work where both hands share betas, or where poses are mirrored between hands.
+
+### Speed
+
+The layer has no host-device synchronization and compiles into a single graph. On small batches the eager GPU time is
+dominated by kernel launches, which `torch.compile` removes:
+
+```python
+mano_layer = torch.compile(ManoLayer(...).cuda(), mode="reduce-overhead")  # CUDA graphs; fixed input shapes
+```
+
+### Reading the MANO training poses
+
+The MANO website provides the poses the model was trained with (_Training Scans Registrations_). They load with
+`manotorch.utils.mano_io.load_mano_pickle` and are reproduced exactly (to 1e-16 m in float64) by:
+
+| Data | How to evaluate it |
+| --- | --- |
+| `handsOnly_REGISTRATIONS_r_lm___POSES/*.pkl`: `pose` (48,), `betas`, `trans`, all right hands (left ones mirrored) | `ManoLayer(side="right", use_pca=False, flat_hand_mean=True)(pose, betas).verts + trans` equals `v`; `transforms_abs[..., :3, 3] + trans` equals `J_transformed` |
+| `handsOnly_REGISTRATIONS_r_lm___POSES___{R,L}.npy`: (1554, 45) articulation only | prepend 3 zeros for the global rotation; `L` is `R` mirrored for the left model, i.e. the y and z components of each joint's axis-angle negated |
+| synthetic sequences `handPose_*.pkl`: lists of (78,) vectors, `[0:66]` all zero | no metadata ships with them; they match the SMPL+H pose layout of the official code (66 body values, then 6 PCA coefficients of the left hand `[66:72]` and of the right hand `[72:78]`, `flat_hand_mean=False` by default): `ManoLayer(side=..., use_pca=True, ncomps=6, flat_hand_mean=False)` with 3 zeros prepended. With `flat_hand_mean=False` the poses lie as close to the training poses as 6 PCA components allow |
+
+### Demos
 
 | [Visualize](scripts/simple_app.py) | [Compose Hand](scripts/simple_compose.py) | [Error Correction](scripts/simple_anatomy_loss.py) |
 | :--------------------------------: | :---------------------------------------: | :------------------------------------------------: |

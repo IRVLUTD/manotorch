@@ -37,7 +37,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 import torch
-import torch.nn.functional as F
 
 
 def _index_from_letter(letter: str) -> int:
@@ -116,10 +115,9 @@ def _sqrt_positive_part(x: torch.Tensor) -> torch.Tensor:
     Returns torch.sqrt(torch.max(0, x))
     but with a zero subgradient where x is 0.
     """
-    ret = torch.zeros_like(x)
     positive_mask = x > 0
-    ret[positive_mask] = torch.sqrt(x[positive_mask])
-    return ret
+    safe_x = torch.where(positive_mask, x, 1.0)
+    return torch.where(positive_mask, torch.sqrt(safe_x), 0.0)
 
 
 def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
@@ -162,14 +160,13 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
 
     # We floor here at 0.1 but the exact level is not important; if q_abs is small,
     # the candidate won't be picked.
-    flr = torch.tensor(0.1).to(dtype=q_abs.dtype, device=q_abs.device)
-    quat_candidates = quat_by_rijk / (2.0 * q_abs[..., None].max(flr))
+    quat_candidates = quat_by_rijk / (2.0 * q_abs[..., None].clamp(min=0.1))
 
     # if not for numerical problems, quat_candidates[i] should be same (up to a sign),
     # forall i; we pick the best-conditioned one (with the largest denominator)
-
-    return quat_candidates[F.one_hot(q_abs.argmax(dim=-1), num_classes=4) > 0.5, :  # pyre-ignore[16]
-                          ].reshape(batch_dim + (4,))
+    indices = q_abs.argmax(dim=-1, keepdim=True)
+    gather_indices = indices.unsqueeze(-1).expand(list(batch_dim) + [1, 4])
+    return torch.gather(quat_candidates, -2, gather_indices).squeeze(-2)
 
 
 def matrix_to_euler_angles(matrix: torch.Tensor, convention: str) -> torch.Tensor:
@@ -248,16 +245,8 @@ def axis_angle_to_quaternion(axis_angle: torch.Tensor) -> torch.Tensor:
         quaternions with real part first, as tensor of shape (..., 4).
     """
     angles = torch.norm(axis_angle, p=2, dim=-1, keepdim=True)
-    half_angles = angles * 0.5
-    eps = 1e-6
-    small_angles = angles.abs() < eps
-    sin_half_angles_over_angles = torch.empty_like(angles)
-    sin_half_angles_over_angles[~small_angles] = (torch.sin(half_angles[~small_angles]) / angles[~small_angles])
-    # for x small, sin(x/2) is about x/2 - (x/2)^3/6
-    # so sin(x/2)/x is about 1/2 - (x*x)/48
-    sin_half_angles_over_angles[small_angles] = (0.5 - (angles[small_angles] * angles[small_angles]) / 48)
-    quaternions = torch.cat([torch.cos(half_angles), axis_angle * sin_half_angles_over_angles], dim=-1)
-    return quaternions
+    sin_half_angles_over_angles = 0.5 * torch.sinc(angles * 0.5 / torch.pi)
+    return torch.cat([torch.cos(angles * 0.5), axis_angle * sin_half_angles_over_angles], dim=-1)
 
 
 def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
@@ -327,12 +316,5 @@ def quaternion_to_axis_angle(quaternions: torch.Tensor) -> torch.Tensor:
     """
     norms = torch.norm(quaternions[..., 1:], p=2, dim=-1, keepdim=True)
     half_angles = torch.atan2(norms, quaternions[..., :1])
-    angles = 2 * half_angles
-    eps = 1e-6
-    small_angles = angles.abs() < eps
-    sin_half_angles_over_angles = torch.empty_like(angles)
-    sin_half_angles_over_angles[~small_angles] = (torch.sin(half_angles[~small_angles]) / angles[~small_angles])
-    # for x small, sin(x/2) is about x/2 - (x/2)^3/6
-    # so sin(x/2)/x is about 1/2 - (x*x)/48
-    sin_half_angles_over_angles[small_angles] = (0.5 - (angles[small_angles] * angles[small_angles]) / 48)
+    sin_half_angles_over_angles = 0.5 * torch.sinc(half_angles / torch.pi)
     return quaternions[..., 1:] / sin_half_angles_over_angles

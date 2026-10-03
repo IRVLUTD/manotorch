@@ -1,13 +1,44 @@
-import os
 import warnings
-from typing import Optional
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import torch
 
 from .utils.geometry import axis_angle_to_matrix, quaternion_to_axis_angle, quaternion_to_matrix
-from .utils.mano_io import load_mano_pickle
+from .utils.mano_io import find_mano_model, load_mano_model
+
+# Vertices appended as fingertips (thumb, index, middle, ring, little), aligned with smplx
+TIP_VERT_IDS = [744, 320, 443, 554, 671]
+
+# Order of the 21 output joints (SNAP definition), indexing the 16 MANO joints followed by the 5 fingertips
+#   original MANO joint order (right hand)
+#                16-15-14-13-\
+#                             \
+#          17 --3 --2 --1------0
+#        18 --6 --5 --4-------/
+#        19 -12 -11 --10-----/
+#          20 --9 --8 --7---/
+JOINTS_REORDER = [0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18, 10, 11, 12, 19, 7, 8, 9, 20]
+
+# Faces that close the open wrist of the right-hand mesh
+# https://github.com/hassony2/handobjectconsist/blob/master/meshreg/models/manoutils.py
+CLOSE_FACES = [
+    [92, 38, 122],
+    [234, 92, 122],
+    [239, 234, 122],
+    [279, 239, 122],
+    [215, 279, 122],
+    [215, 122, 118],
+    [215, 118, 117],
+    [215, 117, 119],
+    [215, 119, 120],
+    [215, 120, 108],
+    [215, 108, 79],
+    [215, 79, 78],
+    [215, 78, 121],
+    [214, 215, 121],
+]
 
 
 @dataclass
@@ -22,12 +53,10 @@ class MANOOutput:
 
 
 def th_with_zeros(tensor):
-    batch_size = tensor.shape[0]
-    padding = tensor.new([0.0, 0.0, 0.0, 1.0])
-    padding.requires_grad = False
-    concat_list = [tensor, padding.view(1, 1, 4).repeat(batch_size, 1, 1)]
-    cat_res = torch.cat(concat_list, 1)
-    return cat_res
+    """Append the homogeneous row [0, 0, 0, 1] to a batch of (3, 4) transforms."""
+    padding = tensor.new_zeros(tensor.shape[0], 1, 4)
+    padding[..., 3] = 1.0
+    return torch.cat([tensor, padding], 1)
 
 
 class ManoLayer(torch.nn.Module):
@@ -40,8 +69,25 @@ class ManoLayer(torch.nn.Module):
         use_pca: bool = False,
         flat_hand_mean: bool = True,  # Only used in pca mode
         ncomps: int = 15,  # Only used in pca mode
+        fix_left_shapedirs: bool = False,
         **kargs,
     ):
+        """Differentiable MANO layer.
+
+        Args:
+            rot_mode: "axisang" (pose given as axis-angles or PCA coefficients) or "quat" (16 quaternions).
+            side: "right" or "left".
+            center_idx: if set, outputs are expressed relative to this joint (of the 21 output joints).
+            mano_assets_root: folder containing `models/MANO_{RIGHT,LEFT}.npz` or `.pkl`.
+            use_pca: pose articulation given as `ncomps` PCA coefficients instead of 45 axis-angle values.
+            flat_hand_mean: if False, the articulation is relative to the MANO mean hand pose.
+            ncomps: number of PCA components used when `use_pca` is True.
+            fix_left_shapedirs: the official left-hand model ships the right-hand shape blend shapes without
+                mirroring their x component (https://github.com/vchoutas/smplx/issues/48), so a left hand with
+                non-zero betas is not the mirror of the right hand with the same betas. When True, the x component
+                is negated for the left hand. Off by default, to match the official model and the data fitted with
+                it (e.g. with manopth or smplx); this changes the left-hand shape, not the joint rotations.
+        """
         super().__init__()
         self.center_idx = center_idx
         self.rot_mode = rot_mode
@@ -50,224 +96,158 @@ class ManoLayer(torch.nn.Module):
         self.mano_assets_root = mano_assets_root
         self.flat_hand_mean = flat_hand_mean
         self.ncomps = ncomps if use_pca else -1
+        self.fix_left_shapedirs = fix_left_shapedirs
 
         if rot_mode == "axisang":
             self.rot_dim = 3
         elif rot_mode == "quat":
             self.rot_dim = 4
-            if use_pca == True or flat_hand_mean == False:
+            if use_pca or not flat_hand_mean:
                 warnings.warn("Quat mode doesn't support PCA pose or non flat_hand_mean !")
         else:
             raise NotImplementedError(f"Unrecognized rotation mode, expect [pca|axisang|quat], got {rot_mode}")
 
         # load model according to side flag
-        mano_assets_path = os.path.join(mano_assets_root, "models", f"MANO_{side.upper()}.pkl")  # eg.  MANO_RIGHT.pkl
-        assert os.path.isfile(mano_assets_path), (
-            f"Can not find MANO assets {mano_assets_path}, please follow steps in README.md"
-        )
+        smpl_data = load_mano_model(find_mano_model(mano_assets_root, side))
 
-        # parse and register stuff
-        smpl_data = load_mano_pickle(mano_assets_path)
-        self.register_buffer("th_betas", torch.zeros(1, smpl_data["shapedirs"].shape[-1]))
-        self.register_buffer("th_shapedirs", torch.Tensor(smpl_data["shapedirs"]))
+        shapedirs = smpl_data["shapedirs"].copy()
+        if side == "left" and fix_left_shapedirs:
+            shapedirs[:, 0, :] *= -1
+
+        self.register_buffer("th_betas", torch.zeros(1, shapedirs.shape[-1]))
+        self.register_buffer("th_shapedirs", torch.Tensor(shapedirs))
         self.register_buffer("th_posedirs", torch.Tensor(smpl_data["posedirs"]))
         self.register_buffer("th_v_template", torch.Tensor(smpl_data["v_template"]).unsqueeze(0))
         self.register_buffer("th_J_regressor", torch.Tensor(smpl_data["J_regressor"]))
         self.register_buffer("th_weights", torch.Tensor(smpl_data["weights"]))
         self.register_buffer("th_faces", torch.from_numpy(smpl_data["f"].astype(np.int64)))
 
-        kintree_table = smpl_data["kintree_table"]
-        self.kintree_parents = list(kintree_table[0].tolist())
+        self.kintree_parents = list(smpl_data["kintree_table"][0].tolist())
         hands_components = smpl_data["hands_components"]
 
         if rot_mode == "axisang":
             hands_mean = np.zeros(hands_components.shape[1]) if flat_hand_mean else smpl_data["hands_mean"]
-            hands_mean = hands_mean.copy()
-            hands_mean = torch.Tensor(hands_mean).unsqueeze(0)
-            self.register_buffer("th_hands_mean", hands_mean)
+            self.register_buffer("th_hands_mean", torch.Tensor(hands_mean).unsqueeze(0))
 
-        if rot_mode == "axisang" or use_pca == True:
-            selected_components = hands_components[:ncomps]
-            selected_components = torch.Tensor(selected_components)
-            self.register_buffer("th_selected_comps", selected_components)
+        if rot_mode == "axisang" or use_pca:
+            self.register_buffer("th_selected_comps", torch.Tensor(hands_components[:ncomps]))
 
-        # End
+        # constants used in forward, kept on the layer's device (not part of the state dict)
+        self.register_buffer("_tip_vert_ids", torch.tensor(TIP_VERT_IDS), persistent=False)
+        self.register_buffer("_joints_reorder", torch.tensor(JOINTS_REORDER), persistent=False)
+        self.register_buffer("_homo_row", torch.tensor([0.0, 0.0, 0.0, 1.0]).view(1, 1, 1, 4), persistent=False)
 
     def rotation_by_axisang(self, pose_coeffs):
-        batch_size = pose_coeffs.shape[0]
         hand_pose_coeffs = pose_coeffs[:, self.rot_dim :]
         root_pose_coeffs = pose_coeffs[:, : self.rot_dim]
-        if self.use_pca:
-            full_hand_pose = hand_pose_coeffs.mm(self.th_selected_comps)
-        else:
-            full_hand_pose = hand_pose_coeffs
+        full_hand_pose = hand_pose_coeffs.mm(self.th_selected_comps) if self.use_pca else hand_pose_coeffs
 
         # Concatenate back global rot
-        full_poses = torch.cat([root_pose_coeffs, self.th_hands_mean + full_hand_pose], 1)
-
-        pose_vec_reshaped = full_poses.contiguous().view(-1, 3)  # (B x N, 3)
-        rot_mats = axis_angle_to_matrix(pose_vec_reshaped)  # (B x N, 3, 3)
-        # rot_mats = lietorch.SO3.exp(pose_vec_reshaped).matrix()[..., :3, :3]  # (B x N, 3, 3)
-        full_rots = rot_mats.view(batch_size, 16, 3, 3)
-        rotation_blob = {"full_rots": full_rots, "full_poses": full_poses}
-        return rotation_blob
+        full_poses = torch.cat([root_pose_coeffs, self.th_hands_mean + full_hand_pose], 1)  # (B, 48)
+        full_rots = axis_angle_to_matrix(full_poses.reshape(-1, 16, 3))  # (B, 16, 3, 3)
+        return {"full_rots": full_rots, "full_poses": full_poses}
 
     def rotation_by_quaternion(self, pose_coeffs):
         batch_size = pose_coeffs.shape[0]
         full_quat_poses = pose_coeffs.view((batch_size, 16, 4))  # [B. 16, 4]
         full_rots = quaternion_to_matrix(full_quat_poses)  # [B, 16, 3, 3]
         full_poses = quaternion_to_axis_angle(full_quat_poses).reshape(batch_size, -1)  # [B, 16 x 3]
+        return {"full_rots": full_rots, "full_poses": full_poses}
 
-        rotation_blob = {"full_rots": full_rots, "full_poses": full_poses}
-        return rotation_blob
+    def _shaped_template(self, betas: torch.Tensor):
+        """$ \\bar{T} + B_S $, Eq. 2 and 4 in MANO. Returns (?, 778, 3), ? = betas.shape[0]."""
+        shapedirs = self.th_shapedirs  # (778, 3, 10)
+        B_S = (betas @ shapedirs.view(-1, shapedirs.shape[-1]).T).view(-1, *shapedirs.shape[:2])
+        return self.th_v_template + B_S
+
+    @staticmethod
+    def _forward_kinematics(rots: torch.Tensor, J: torch.Tensor):
+        """Global rotation and translation of the 16 joints, Eq. 4 in SMPL.
+
+        The 15 finger joints form 5 chains of 3 joints attached to the root: chain level l (1, 2, 3)
+        holds the joints l, l + 3, ..., l + 12.
+
+        Args:
+            rots: (B, 16, 3, 3) local joint rotations.
+            J: (B, 16, 3) rest-pose joint locations.
+
+        Returns:
+            (B, 16, 3, 3) global rotations and (B, 16, 3) global translations.
+        """
+        par_rot, par_tsl, par_J = rots[:, :1], J[:, :1], J[:, :1]
+        lev_rots, lev_tsls = [], []
+        for lev in range(1, 4):
+            lev_J = J[:, lev::3]  # (B, 5, 3)
+            rot = par_rot @ rots[:, lev::3]
+            tsl = (par_rot @ (lev_J - par_J).unsqueeze(-1)).squeeze(-1) + par_tsl
+            lev_rots.append(rot)
+            lev_tsls.append(tsl)
+            par_rot, par_tsl, par_J = rot, tsl, lev_J
+        # interleave the levels back into the MANO joint order 1, 2, 3, 4, ...
+        rot = torch.cat([rots[:, :1], torch.stack(lev_rots, 2).flatten(1, 2)], 1)
+        tsl = torch.cat([J[:, :1], torch.stack(lev_tsls, 2).flatten(1, 2)], 1)
+        return rot, tsl
 
     def skinning_layer(self, full_rots: torch.Tensor, betas: Optional[torch.Tensor]):
         batch_size = full_rots.shape[0]
-        n_rot = int(full_rots.shape[1])  # 16
 
-        root_rot = full_rots[:, 0, :, :]  # (B, 3, 3)
-        hand_rot = full_rots[:, 1:, :, :]  # (B, 15, 3, 3)
-        # Full axis angle representation with root joint
-
-        # ============== Shape Blend Shape >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        # $ B_S = \sum_{n=1}^{|\arrow{\beta}|} \beta_n \mathbf{S}_n $  #Eq.4 in MANO
+        # ============== Shape Blend Shape and joints >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         _betas = self.th_betas if betas is None else betas
-        B_S = torch.matmul(self.th_shapedirs, _betas.transpose(1, 0)).permute(2, 0, 1)  # (?, 778, 3), ? = 1, or B
-
+        v_shaped = self._shaped_template(_betas)  # (?, 778, 3), ? = 1, or B
         # $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
-        J = torch.matmul(self.th_J_regressor, (self.th_v_template + B_S))  # (?, 16, 3)
-        if betas is None:
-            J = J.repeat(batch_size, 1, 1)  # (B, 16, 3)
+        J = (self.th_J_regressor @ v_shaped).expand(batch_size, -1, -1)  # (B, 16, 3)
 
-        # ============== Pose Blender Shape >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        flat_rot = torch.eye(3, dtype=full_rots.dtype, device=full_rots.device)  # (3, 3)
-        flat_rot = flat_rot.view(1, 1, 3, 3).repeat(batch_size, hand_rot.shape[1], 1, 1)  # (B, 15, 3, 3)
-
-        # $ R_n (\arrow{\theta}) -  R_n (\arrow{\theta}^{*}) $
-        rot_minus_mean_flat = (hand_rot - flat_rot).reshape(batch_size, hand_rot.shape[1] * 9)  # (B, 15 x 9)
-
+        # ============== Pose Blend Shape >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         # $ B_P = \sum_{n=1}^{9K} (R_n (\arrow{\theta}) -  R_n (\arrow{\theta}^{*})) * \mathbf{P}_n $  #Eq.3 in MANO
-        B_P = torch.matmul(self.th_posedirs, rot_minus_mean_flat.transpose(0, 1)).permute(2, 0, 1)  # (B, 778, 3)
-
+        eye = torch.eye(3, dtype=full_rots.dtype, device=full_rots.device)
+        pose_feature = (full_rots[:, 1:] - eye).reshape(batch_size, -1)  # (B, 15 x 9)
+        posedirs = self.th_posedirs  # (778, 3, 135)
+        B_P = (pose_feature @ posedirs.view(-1, posedirs.shape[-1]).T).view(batch_size, *posedirs.shape[:2])
         # $ T_P =\bar{\mathbf{T}} + B_S + B_P $ # Eq.2 in MANO
-        T_P = self.th_v_template + B_S + B_P
+        T_P = v_shaped + B_P  # (B, 778, 3)
 
-        # ============== Constructing $ G_{k} $ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        # Global rigid transformation
-        root_j = J[:, 0, :].contiguous().view(batch_size, 3, 1)
-        root_transf = th_with_zeros(torch.cat([root_rot, root_j], 2))
+        # ============== Global transforms $ G_k $ and $ G^{\prime}_k = G_k [I, -J_k] $ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        rot, tsl = self._forward_kinematics(full_rots, J)  # (B, 16, 3, 3), (B, 16, 3)
+        tsl_prime = tsl - (rot @ J.unsqueeze(-1)).squeeze(-1)
 
-        lev1_idxs = [1, 4, 7, 10, 13]
-        lev2_idxs = [2, 5, 8, 11, 14]
-        lev3_idxs = [3, 6, 9, 12, 15]
-        lev1_rots = hand_rot[:, [idx - 1 for idx in lev1_idxs]]
-        lev2_rots = hand_rot[:, [idx - 1 for idx in lev2_idxs]]
-        lev3_rots = hand_rot[:, [idx - 1 for idx in lev3_idxs]]
-        lev1_j = J[:, lev1_idxs]
-        lev2_j = J[:, lev2_idxs]
-        lev3_j = J[:, lev3_idxs]
+        # ============== Linear blend skinning, Eq. 7 in SMPL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        G_prime = torch.cat([rot, tsl_prime.unsqueeze(-1)], -1).view(batch_size, 16, 12)
+        T = (self.th_weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, 778, 3, 4)
+        verts = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, 778, 3)
 
-        # From base to tips
-        # Get lev1 results
-        all_transforms = [root_transf.unsqueeze(1)]
-        lev1_j_rel = lev1_j - root_j.transpose(1, 2)
-        lev1_rel_transform_flt = th_with_zeros(torch.cat([lev1_rots, lev1_j_rel.unsqueeze(3)], 3).view(-1, 3, 4))
-        root_trans_flt = root_transf.unsqueeze(1).repeat(1, 5, 1, 1).view(root_transf.shape[0] * 5, 4, 4)
-        lev1_flt = torch.matmul(root_trans_flt, lev1_rel_transform_flt)
-        all_transforms.append(lev1_flt.view(hand_rot.shape[0], 5, 4, 4))
-
-        # Get lev2 results
-        lev2_j_rel = lev2_j - lev1_j
-        lev2_rel_transform_flt = th_with_zeros(torch.cat([lev2_rots, lev2_j_rel.unsqueeze(3)], 3).view(-1, 3, 4))
-        lev2_flt = torch.matmul(lev1_flt, lev2_rel_transform_flt)
-        all_transforms.append(lev2_flt.view(hand_rot.shape[0], 5, 4, 4))
-
-        # Get lev3 results
-        lev3_j_rel = lev3_j - lev2_j
-        lev3_rel_transform_flt = th_with_zeros(torch.cat([lev3_rots, lev3_j_rel.unsqueeze(3)], 3).view(-1, 3, 4))
-        lev3_flt = torch.matmul(lev2_flt, lev3_rel_transform_flt)
-        all_transforms.append(lev3_flt.view(hand_rot.shape[0], 5, 4, 4))
-
-        reorder_idxs = [0, 1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 14, 5, 10, 15]
-
-        # Eq. 4 in SMPL
-        G_k = torch.cat(all_transforms, 1)[:, reorder_idxs]
-        th_transf_global = G_k
-
-        # ============== Constructing $ G^{\prime}_{k} $ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        joint_js = torch.cat([J, J.new_zeros(batch_size, 16, 1)], 2)
-        tmp2 = torch.matmul(G_k, joint_js.unsqueeze(3))
-        G_prime_k = (G_k - torch.cat([tmp2.new_zeros(*tmp2.shape[:2], 4, 3), tmp2], 3)).permute(0, 2, 3, 1)
-
-        # ============== Finally, blender skinning >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        # we define $ T = w_{k, i} * G^{\prime}_k $
-        T = torch.matmul(G_prime_k, self.th_weights.transpose(0, 1))  # (B, 4, 4, 778)
-
-        T_P_homo = torch.cat(
-            [T_P.transpose(2, 1), torch.ones((batch_size, 1, B_P.shape[1]), dtype=T.dtype, device=T.device)], dim=1
-        )
-        T_P_homo = T_P_homo.unsqueeze(1)  # (B, 1, 4, 778)
-
-        # Eq. 7 in SMPL
-        # Theorem: A \cdot B = (A * B^{T}).sum(1) # A is a matrix, B is a vector
-        verts = (T * T_P_homo).sum(2).transpose(2, 1)  # (B, 778, 4)
-        joints = th_transf_global[:, :, :3, 3]  # (B, 16, 3)
-        verts = verts[:, :, :3]  # (B, 778, 3)
-        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
-        # In addition to MANO reference joints we sample vertices on each finger
-        # to serve as finger tips
-        # if self.side == "right":
-        tips = verts[:, [744, 320, 443, 554, 671]]  # align with smplx
-
-        joints = torch.cat([joints, tips], 1)
-
-        # ** original MANO joint order (right hand)
-        #                16-15-14-13-\
-        #                             \
-        #          17 --3 --2 --1------0
-        #        18 --6 --5 --4-------/
-        #        19 -12 -11 --10-----/
-        #          20 --9 --8 --7---/
-
-        # Reorder joints to match SNAP definition
-        joints = joints[:, [0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18, 10, 11, 12, 19, 7, 8, 9, 20]]
+        # In addition to MANO reference joints we sample vertices on each finger to serve as finger tips,
+        # then reorder joints to match SNAP definition
+        tips = verts.index_select(1, self._tip_vert_ids)
+        joints = torch.cat([tsl, tips], 1).index_select(1, self._joints_reorder)  # (B, 21, 3)
 
         if self.center_idx is not None:
             center_joint = joints[:, self.center_idx].unsqueeze(1)
         else:  # dummy center joint (B, 1, 3)
-            center_joint = torch.zeros_like(joints[:, 0].unsqueeze(1))
+            center_joint = torch.zeros_like(joints[:, :1])
 
-        # apply center shift on verts and joints
+        # apply center shift on verts, joints and global transforms
         joints = joints - center_joint
         verts = verts - center_joint
+        tsl = tsl - center_joint
+        homo_row = self._homo_row.to(rot.dtype).expand(batch_size, 16, 1, 4)
+        transforms_abs = torch.cat([torch.cat([rot, tsl.unsqueeze(-1)], -1), homo_row], -2)  # (B, 16, 4, 4)
 
-        # apply center shift on global
-        global_rot = th_transf_global[:, :, :3, :3]  # (B, 16, 3, 3)
-        global_tsl = th_transf_global[:, :, :3, 3:]  # (B, 16, 3, 1)
-        global_tsl = global_tsl - center_joint.unsqueeze(-1)  # (B, [16], 3, 1)
-        global_transf = torch.cat([global_rot, global_tsl], dim=3)  # (B, 16, 3, 4)
-        global_transf = th_with_zeros(global_transf.view(-1, 3, 4))
-        global_transf = global_transf.view(batch_size, 16, 4, 4)
-
-        skinning_blob = {
+        return {
             "verts": verts,
             "joints": joints,
             "center_joint": center_joint,
-            "transforms_abs": global_transf,
+            "transforms_abs": transforms_abs,
             "betas": _betas,
         }
-        return skinning_blob
 
-    def forward(self, pose_coeffs: torch.Tensor, betas: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, pose_coeffs: torch.Tensor, betas: Optional[torch.Tensor] = None, **kwargs) -> MANOOutput:
         if self.rot_mode == "axisang":
             rot_blob = self.rotation_by_axisang(pose_coeffs)
-        elif self.rot_mode == "quat":
+        else:
             rot_blob = self.rotation_by_quaternion(pose_coeffs)
 
-        full_rots = rot_blob["full_rots"]  # TENSOR
-        skinning_blob = self.skinning_layer(full_rots, betas)
-        output = MANOOutput(
+        skinning_blob = self.skinning_layer(rot_blob["full_rots"], betas)
+        return MANOOutput(
             verts=skinning_blob["verts"],
             joints=skinning_blob["joints"],
             center_idx=self.center_idx,
@@ -276,7 +256,6 @@ class ManoLayer(torch.nn.Module):
             betas=skinning_blob["betas"],
             transforms_abs=skinning_blob["transforms_abs"],
         )
-        return output
 
     def get_rotation_center(self, betas: Optional[torch.Tensor] = None):
         """
@@ -311,45 +290,19 @@ class ManoLayer(torch.nn.Module):
         if self.center_idx is not None:
             return torch.zeros((batch_size, 3), device=betas.device)
 
-        # $ B_S = \sum_{n=1}^{|\arrow{\beta}|} \beta_n \mathbf{S}_n $  #Eq.4 in MANO
-        B_S = torch.matmul(self.th_shapedirs, betas.transpose(1, 0)).permute(2, 0, 1)
-
-        # $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
-        J = torch.matmul(self.th_J_regressor, (self.th_v_template + B_S))  # (B, 16, 3)
-
-        root_rotation_center = J[:, 0, :].contiguous().view(-1, 3)
-        return root_rotation_center
+        # root joint of $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
+        return self.th_J_regressor[0] @ self._shaped_template(betas)  # (B, 3)
 
     def get_mano_closed_faces(self):
         """
         The default MANO mesh is "open" at the wrist. By adding additional faces, the hand mesh is closed,
         which looks much better.
         https://github.com/hassony2/handobjectconsist/blob/master/meshreg/models/manoutils.py
+
+        The added faces are at the end (indices 1538 to 1551); they match the wrist part of the hand, which is
+        not an external surface of the human.
         """
-        close_faces = torch.Tensor(
-            [
-                [92, 38, 122],
-                [234, 92, 122],
-                [239, 234, 122],
-                [279, 239, 122],
-                [215, 279, 122],
-                [215, 122, 118],
-                [215, 118, 117],
-                [215, 117, 119],
-                [215, 119, 120],
-                [215, 120, 108],
-                [215, 108, 79],
-                [215, 79, 78],
-                [215, 78, 121],
-                [214, 215, 121],
-            ]
-        )
+        close_faces = torch.tensor(CLOSE_FACES)
         if self.side == "left":
             close_faces = close_faces[:, [2, 1, 0]]
-        th_closed_faces = torch.cat([self.th_faces.clone().detach().cpu(), close_faces.long()])
-        # Indices of faces added during closing --> should be ignored as they match the wrist
-        # part of the hand, which is not an external surface of the human
-
-        # Valid because added closed faces are at the end
-        hand_ignore_faces = [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551]
-        return th_closed_faces  # , hand_ignore_faces
+        return torch.cat([self.th_faces.detach().cpu(), close_faces])

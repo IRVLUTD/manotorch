@@ -1,36 +1,49 @@
-import os
-import warnings
-
-import numpy as np
 import torch
 from torch.nn import Module
 
-from deprecation import deprecated
 from manotorch.manolayer import ManoLayer
-from manotorch.utils.geometry import matrix_to_euler_angles, euler_angles_to_matrix, rotation_to_axis_angle
+from manotorch.utils.geometry import euler_angles_to_matrix, matrix_to_euler_angles, rotation_to_axis_angle
+
+
+def _homogeneous(rot: torch.Tensor, tsl: torch.Tensor) -> torch.Tensor:
+    """Stack (..., 3, 3) rotations and (..., 3, 1) translations into (..., 4, 4) transforms."""
+    top = torch.cat([rot, tsl], -1)
+    bottom = torch.zeros_like(top[..., :1, :])
+    bottom[..., 3] = 1.0
+    return torch.cat([top, bottom], -2)
+
+
+def _chain_rotations(R_par_chd: torch.Tensor) -> torch.Tensor:
+    """Compose (B, 16, 3, 3) parent-to-child rotations along the MANO kinematic tree into global rotations.
+
+    The 15 finger joints form 5 chains of 3 joints attached to the root: chain level l (1, 2, 3)
+    holds the joints l, l + 3, ..., l + 12.
+    """
+    root = R_par_chd[:, :1]
+    levels = [root]
+    for lev in range(1, 4):
+        levels.append(levels[-1] @ R_par_chd[:, lev::3])
+    return torch.cat([root, torch.stack(levels[1:], 2).flatten(1, 2)], 1)
 
 
 class AxisAdaptiveLayer(torch.nn.Module):
-
     def __init__(self, side: str = "right"):
         super(AxisAdaptiveLayer, self).__init__()
         self.joints_mapping = [5, 6, 7, 9, 10, 11, 17, 18, 19, 13, 14, 15, 1, 2, 3]
         self.parent_joints_mappings = [0, 5, 6, 0, 9, 10, 0, 17, 18, 0, 13, 14, 0, 1, 2]
         self.side = side
-        if side == "right":
-            up_axis_base = np.vstack(
-                (np.array([[0, 1, 0]]).repeat(13, axis=0), np.array([[1, 1, 1]]).repeat(3, axis=0))
-            )
-        elif side == "left":
-            up_axis_base = np.vstack(
-                (np.array([[0, 1, 0]]).repeat(13, axis=0), np.array([[-1, 1, 1]]).repeat(3, axis=0))
-            )
-        self.register_buffer("up_axis_base", torch.from_numpy(up_axis_base).float().unsqueeze(0))
+        thumb_up = [1.0, 1.0, 1.0] if side == "right" else [-1.0, 1.0, 1.0]
+        up_axis_base = torch.tensor([[0.0, 1.0, 0.0]] * 13 + [thumb_up] * 3)
+        self.register_buffer("up_axis_base", up_axis_base.unsqueeze(0))
+        # the back axis of the root is +x for both sides
+        self.register_buffer("_root_b_axis", torch.tensor([[[1.0, 0.0, 0.0]]]), persistent=False)
+        self.register_buffer("_joints_mapping", torch.tensor(self.joints_mapping), persistent=False)
+        self.register_buffer("_parent_joints_mapping", torch.tensor(self.parent_joints_mappings), persistent=False)
 
     def forward(self, hand_joints, transf):
         """Compute the back (twist), up (spread), and left (bend) axes direction of the hand
         Args:
-            hand_joints (torch.Tensor): (B, 16, 3)
+            hand_joints (torch.Tensor): (B, 21, 3)
             transf (torch.Tensor): (B, 16, 4, 4)
         Returns:
             b_axis (torch.Tensor): (B, 16, 3)
@@ -39,18 +52,13 @@ class AxisAdaptiveLayer(torch.nn.Module):
         """
         bs = transf.shape[0]
 
-        # b_axis = hand_joints[:, self.joints_mapping] - hand_joints[:, [i + 1 for i in self.joints_mapping]]
-        b_axis = hand_joints[:, self.parent_joints_mappings] - hand_joints[:, self.joints_mapping]
+        b_axis = hand_joints.index_select(1, self._parent_joints_mapping) - hand_joints.index_select(
+            1, self._joints_mapping
+        )
         b_axis = (transf[:, 1:, :3, :3].transpose(2, 3) @ b_axis.unsqueeze(-1)).squeeze(-1)
-        if self.side == "right":
-            b_axis_init = torch.tensor([1, 0, 0]).float().unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1).to(b_axis.device)
-        elif self.side == "left":
-            b_axis_init = torch.tensor([-1, 0, 0]).float().unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1).to(b_axis.device)
-            b_axis_init[:, :, 0] *= -1.0  # flip up direction for left hand
-        b_axis = torch.cat((b_axis_init, b_axis), dim=1)  # (B, 16, 3)
+        b_axis = torch.cat((self._root_b_axis.expand(bs, 1, 3), b_axis), dim=1)  # (B, 16, 3)
 
         l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 16, 3), dim=2)
-
         u_axis = torch.cross(l_axis, b_axis, dim=2)
 
         return (
@@ -61,28 +69,26 @@ class AxisAdaptiveLayer(torch.nn.Module):
 
 
 class AxisLayerFK(Module):
-
     def __init__(self, side: str = "right", mano_assets_root: str = "assets/mano"):
         super(AxisLayerFK, self).__init__()
         self.transf_parent_mapping = [0, 0, 1, 2, 0, 4, 5, 0, 7, 8, 0, 10, 11, 0, 13, 14]
-
         self.side = side
-        tmpl_pose = torch.zeros(1, 48)
-        tmpl_shape = torch.zeros(1, 10)
-        tmpl_mano = ManoLayer(side=side, mano_assets_root=mano_assets_root)(tmpl_pose, tmpl_shape)
-        tmpl_joints = tmpl_mano.joints
-        tmpl_transf_abs = tmpl_mano.transforms_abs  # tmpl_T_g_p
 
-        tmpl_b_axis, tmpl_u_axis, tmpl_l_axis = AxisAdaptiveLayer(side=side)(tmpl_joints, tmpl_transf_abs)  # (1, 16, 3)
-        tmpl_R_p_a = torch.cat((tmpl_b_axis.unsqueeze(-1), tmpl_u_axis.unsqueeze(-1), tmpl_l_axis.unsqueeze(-1)), dim=3)
-        zero_tsl = torch.zeros(1, 16, 3, 1)
-        zero_pad = torch.tensor([[[[0, 0, 0, 1]]]]).repeat(*zero_tsl.shape[0:2], 1, 1)
-        _tmpl_T_p_a = torch.cat((tmpl_R_p_a, zero_tsl), dim=3)  # (1, 16, 3, 4)
-        tmpl_T_p_a = torch.cat((_tmpl_T_p_a, zero_pad), dim=2)  # (1, 16, 4, 4)
+        tmpl_mano = ManoLayer(side=side, mano_assets_root=mano_assets_root)(torch.zeros(1, 48), torch.zeros(1, 10))
+        tmpl_transf_abs = tmpl_mano.transforms_abs  # tmpl_T_g_p
+        tmpl_b_axis, tmpl_u_axis, tmpl_l_axis = AxisAdaptiveLayer(side=side)(tmpl_mano.joints, tmpl_transf_abs)
+        tmpl_R_p_a = torch.stack((tmpl_b_axis, tmpl_u_axis, tmpl_l_axis), dim=3)  # (1, 16, 3, 3)
+        tmpl_T_p_a = _homogeneous(tmpl_R_p_a, torch.zeros(1, 16, 3, 1))  # (1, 16, 4, 4)
         tmpl_T_g_a = torch.matmul(tmpl_transf_abs, tmpl_T_p_a)  # (1, 16, 4, 4)
         self.register_buffer("TMPL_T_p_a", tmpl_T_p_a.float())
         self.register_buffer("TMPL_R_p_a", tmpl_R_p_a.float())
         self.register_buffer("TMPL_T_g_a", tmpl_T_g_a.float())
+
+        parent = torch.tensor(self.transf_parent_mapping)
+        self.register_buffer("_parent", parent, persistent=False)
+        # rotation from each template parent's anatomy frame to its template child's anatomy frame
+        Ra_par_tmplchd = self.TMPL_R_p_a[:, parent].transpose(2, 3) @ self.TMPL_R_p_a
+        self.register_buffer("_Ra_par_tmplchd", Ra_par_tmplchd, persistent=False)
 
     def forward(self, transf):
         """extract the anatomy aligned euler angles from the MANO global transformation
@@ -103,22 +109,11 @@ class AxisLayerFK(Module):
             Ra_tmplchd_chd: torch.Tensor: [B, 16, 3, 3], anatomy aligned rotation matrix;
             ee_a_tmplchd_chd: torch.Tensor: [B, 16, 3] anatomy aligned euler angle;
         """
+        R_g_a = transf[:, :, :3, :3] @ self.TMPL_R_p_a  # (B, 16, 3, 3)
+        T_g_a = _homogeneous(R_g_a, transf[:, :, :3, 3:])  # (B, 16, 4, 4)
 
-        T_g_p = transf
-        R_g_p = T_g_p[:, :, :3, :3]
-        R_g_a = torch.matmul(R_g_p, self.TMPL_R_p_a)  # (B, 16, 3, 3)
-        T_g_a = torch.cat((R_g_a, T_g_p[:, :, :3, 3:]), dim=3)  # (B, 16, 3, 4)
-        zero_pad = torch.tensor([[[[0, 0, 0, 1]]]]).repeat(*T_g_a.shape[0:2], 1, 1).to(T_g_a.device)
-        T_g_a = torch.cat((T_g_a, zero_pad), dim=2)  # (B, 16, 4, 4)
-
-        Ta_par_chd = torch.matmul(T_g_a[:, self.transf_parent_mapping, ...].transpose(2, 3), T_g_a)  # (B, 16, 4, 4)
-        Ra_par_chd = Ta_par_chd[:, :, :3, :3]  # (B, 16, 3, 3)
-
-        Ra_par_tmplchd = torch.matmul(
-            self.TMPL_R_p_a[:, self.transf_parent_mapping, ...].transpose(2, 3), self.TMPL_R_p_a
-        )
-        Ra_chd_tmplchd = torch.matmul(Ra_par_chd.transpose(2, 3), Ra_par_tmplchd)
-        Ra_tmplchd_chd = Ra_chd_tmplchd.transpose(2, 3)
+        Ra_par_chd = R_g_a.index_select(1, self._parent).transpose(2, 3) @ R_g_a  # (B, 16, 3, 3)
+        Ra_tmplchd_chd = self._Ra_par_tmplchd.transpose(2, 3) @ Ra_par_chd
 
         ee_a_tmplchd_chd = matrix_to_euler_angles(Ra_tmplchd_chd, convention="XYZ")  # (B, 16, 3)
         return T_g_a, Ra_tmplchd_chd, ee_a_tmplchd_chd
@@ -134,79 +129,20 @@ class AxisLayerFK(Module):
         #    9-- 8 -- 7 --/
 
         Args:
-            angles (torch.Tensor): [B, 16, 3] anatomy aligned euler angles
+            angles (torch.Tensor): [B, 16, 3] anatomy aligned euler angles; not modified.
 
         Returns:
             torch.Tensor: mano pose (\theta) in the MANO original frame
         """
         ee_tmplchd_chd = angles  # (B, 16, 3)
-
         if self.side == "left":
-            ee_tmplchd_chd[:, :, 0] *= -1.0
-            ee_tmplchd_chd[:, :, 1] *= -1.0
+            ee_tmplchd_chd = torch.cat((-angles[..., :2], angles[..., 2:]), dim=-1)
 
         Ra_tmplchd_chd = euler_angles_to_matrix(ee_tmplchd_chd, convention="XYZ")  # (B, 16, 3, 3)
+        Ra_par_chd = self._Ra_par_tmplchd @ Ra_tmplchd_chd  # (B, 16, 3, 3)
 
-        Ra_par_tmplchd = torch.matmul(
-            self.TMPL_R_p_a[:, self.transf_parent_mapping, ...].transpose(2, 3), self.TMPL_R_p_a
-        )
-        Ra_par_chd = torch.matmul(Ra_par_tmplchd, Ra_tmplchd_chd)  # (B, 16, 3, 3)
+        R_g_a = _chain_rotations(Ra_par_chd)  # (B, 16, 3, 3)
+        R_g_p = R_g_a @ self.TMPL_R_p_a.transpose(2, 3)  # (B, 16, 3, 3)
 
-        # chains
-        lev1_idxs = [1, 4, 7, 10, 13]
-        lev2_idxs = [2, 5, 8, 11, 14]
-        lev3_idxs = [3, 6, 9, 12, 15]
-
-        all_rot_chains = [Ra_par_chd[:, 0:1]]
-        lev1_rots = Ra_par_chd[:, [idx for idx in lev1_idxs]]  # (B, 5, 3, 3)
-        lev2_rots = Ra_par_chd[:, [idx for idx in lev2_idxs]]  # (B, 5, 3, 3)
-        lev3_rots = Ra_par_chd[:, [idx for idx in lev3_idxs]]  # (B, 5, 3, 3)
-
-        lev1_rot_chains = torch.matmul(Ra_par_chd[:, 0:1].repeat(1, 5, 1, 1), lev1_rots)  # (B, 5, 3, 3)
-        all_rot_chains.append(lev1_rot_chains)
-        lev2_rot_chains = torch.matmul(lev1_rot_chains, lev2_rots)  # (B, 5, 3, 3)
-        all_rot_chains.append(lev2_rot_chains)
-        lev3_rot_chains = torch.matmul(lev2_rot_chains, lev3_rots)  # (B, 5, 3, 3)
-        all_rot_chains.append(lev3_rot_chains)
-        reorder_idxs = [0, 1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 14, 5, 10, 15]
-        R_g_a = torch.cat(all_rot_chains, 1)[:, reorder_idxs]  # (B, 16, 3, 3)
-        R_g_p = torch.matmul(R_g_a, self.TMPL_R_p_a.transpose(2, 3))  # (B, 16, 3, 3)
-
-        Rp_par_chd = torch.matmul(R_g_p[:, self.transf_parent_mapping].transpose(2, 3), R_g_p)  # (B, 16, 3, 3)
-        aa_p_par_chd = rotation_to_axis_angle(Rp_par_chd)  # (B, 16, 3)
-        return aa_p_par_chd
-
-
-@deprecated(
-    deprecated_in="0.0.2",
-    removed_in="0.0.3",
-    details="This class is deprecated. Please use the new class 'AxisLayerFK' instead.",
-)
-class AxisLayer(Module):
-
-    def __init__(self):
-        super().__init__()
-        self.joints_mapping = [5, 6, 7, 9, 10, 11, 17, 18, 19, 13, 14, 15, 1, 2, 3]
-        up_axis_base = np.vstack((np.array([[0, 1, 0]]).repeat(12, axis=0), np.array([[1, 1, 1]]).repeat(3, axis=0)))
-        self.register_buffer("up_axis_base", torch.from_numpy(up_axis_base).float().unsqueeze(0))
-
-    def forward(self, hand_joints, transf):
-        """
-        input: hand_joints[B, 21, 3], transf[B, 16, 4, 4]
-        output: b_axis[B, 15, 3], u_axis[B, 15, 3], l_axis[B, 15, 3]
-        b: back; u: up; l: left
-        """
-        bs = transf.shape[0]
-
-        b_axis = hand_joints[:, self.joints_mapping] - hand_joints[:, [i + 1 for i in self.joints_mapping]]
-        b_axis = (transf[:, 1:, :3, :3].transpose(2, 3) @ b_axis.unsqueeze(-1)).squeeze(-1)
-
-        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 15, 3), dim=2)
-
-        u_axis = torch.cross(l_axis, b_axis, dim=2)
-
-        return (
-            b_axis / torch.norm(b_axis, dim=2, keepdim=True),
-            u_axis / torch.norm(u_axis, dim=2, keepdim=True),
-            l_axis / torch.norm(l_axis, dim=2, keepdim=True),
-        )
+        Rp_par_chd = R_g_p.index_select(1, self._parent).transpose(2, 3) @ R_g_p  # (B, 16, 3, 3)
+        return rotation_to_axis_angle(Rp_par_chd)  # (B, 16, 3)

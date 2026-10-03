@@ -47,7 +47,7 @@ def main(args, off_screen=False, seed=42):
             ncomps=45,
         )
         axis_layer = AxisLayerFK(side=mano_layer.side, mano_assets_root="assets/mano")
-        anchor_layer = AnchorLayer(anchor_root="assets/anchor")
+        anchor_layer = AnchorLayer()
 
         mano_layer = mano_layer.to(device)
         axis_layer = axis_layer.to(device)
