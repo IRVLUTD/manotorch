@@ -6,6 +6,11 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Runtime guards (2026-10-04)
+
+- `tests/test_runtime.py`: forward and backward through every layer (PCA, quaternion, left hand with centering, `joints_only`, `transl`, `AxisLayerFK` forward and `compose`, `AnchorLayer`, `AnatomyConstraintLossEE`) must not synchronize the host with the GPU (`torch.cuda.set_sync_debug_mode("error")`) and must not emit any warning (`torch.set_warn_always(True)`, warnings as errors); `gradcheck` at rotations of 0, 1e-9 and 1e-7 rad, for the full and the joints-only forward. `tests/test_geometry.py` checks the rotation conversions against `torch.linalg.matrix_exp`, round trips in all 12 Euler conventions, non-unit quaternions and gimbal lock.
+- `AnatomyConstraintLossEE` indexed the angles with Python lists, which copies the index to the GPU and synchronizes on every call; it now gathers them with slices (same output order and values).
+
 ### Rotation conversions rewritten (2026-10-04)
 
 - `manotorch/utils/geometry.py` is a new, independent implementation written from the textbook formulas (Rodrigues' formula, quaternion-matrix identities, Shepperd's method, closed-form Euler angle extraction); it contains no PyTorch3D code any more, so the PyTorch3D BSD notice was removed from the file header, `NOTICE` and the README. Function names and signatures are unchanged.

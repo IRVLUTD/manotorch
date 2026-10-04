@@ -118,9 +118,14 @@ class AnatomyConstraintLossEE(nn.Module):
         finger_pip_id = [2, 5, 11, 8]
         finger_dip_id = [3, 6, 12, 9]
 
-        ee_mcps = euler_angles[:, finger_mcp_id]  # (B, 4, 3)
-        ee_pips = euler_angles[:, finger_pip_id]  # (B, 4, 3)
-        ee_dips = euler_angles[:, finger_dip_id]  # (B, 4, 3)
+        # gather the joints with slices: indexing a CUDA tensor with a Python list copies the index to the device,
+        # which synchronizes with the host
+        def take(ids):
+            return torch.cat([euler_angles[:, i : i + 1] for i in ids], dim=1)
+
+        ee_mcps = take(finger_mcp_id)  # (B, 4, 3)
+        ee_pips = take(finger_pip_id)  # (B, 4, 3)
+        ee_dips = take(finger_dip_id)  # (B, 4, 3)
 
         loss_finger_mcps = self._cal_loss_one_joint(ee_mcps, self.finger_mcp)  # (B, 4)
         loss_finger_pips = self._cal_loss_one_joint(ee_pips, self.finger_pip)  # (B, 4)
