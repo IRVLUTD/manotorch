@@ -5,15 +5,15 @@
 
 The index finger is bent: its MCP joint (1) by pi/6 around the spread axis and pi/2 around the bend axis, its PIP
 and DIP joints (2, 3) by pi/2 around the bend axis. The angles follow one convention for both hands, so the two
-composed hands are mirror images. Arrows: red = back (twist), green = up (spread), blue = left (bend).
+composed hands are mirror images; they are drawn a few centimeters apart. Arrows: red = back (twist), green = up
+(spread), blue = left (bend).
 """
 
 import argparse
 import math
 
-import pyvista as pv
 import torch
-from trimesh import Trimesh
+from _common import add_axes, add_hand, add_legend, get_device, hand_offset, hands_legend, new_plotter, show_or_record
 
 from manotorch.axislayer import AxisLayerFK
 from manotorch.manolayer import ManoLayer
@@ -27,28 +27,6 @@ from manotorch.manolayer import ManoLayer
 #    9-- 8 -- 7 --/
 
 
-def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def show_or_record(pl: pv.Plotter, gif: str | None):
-    if gif is None:
-        pl.add_camera_orientation_widget()
-        pl.show()
-        return
-    pl.window_size = (1024, 1024)
-    view_up = [-1, 0, 0]
-    path = pl.generate_orbital_path(factor=2.0, n_points=36, viewup=view_up, shift=0.1)
-    pl.open_gif(gif)
-    pl.orbit_on_path(path, write_frames=True, step=0.05, viewup=view_up)
-    pl.close()
-    print(f"saved {gif}")
-
-
 def main(args):
     device = get_device()
     print(f"Using device: {device}")
@@ -58,7 +36,7 @@ def main(args):
     composed_ee[:, 2] = torch.tensor([0, 0, math.pi / 2])
     composed_ee[:, 3] = torch.tensor([0, 0, math.pi / 2])
 
-    pl = pv.Plotter(off_screen=args.gif is not None)
+    pl = new_plotter(off_screen=args.gif is not None)
     poses = {}
     for side in ["right", "left"]:
         mano_layer = ManoLayer(
@@ -79,15 +57,9 @@ def main(args):
 
         mano_output = mano_layer(pose)
         T_g_a, _, _ = axis_layer(mano_output.transforms_abs)
-        mesh = pv.wrap(
-            Trimesh(mano_output.verts[0].cpu().numpy(), mano_layer.get_mano_closed_faces().numpy(), process=False)
-        )
-        pl.add_mesh(mesh, opacity=0.5, smooth_shading=True, color="orange" if side == "right" else "cyan")
-
-        centers = T_g_a[0, :, :3, 3].cpu().numpy()  # (16, 3)
-        axes = T_g_a[0, :, :3, :3].cpu().numpy()  # (16, 3, 3), columns: back, up, left
-        for k, color in enumerate(["red", "green", "blue"]):
-            pl.add_arrows(centers, axes[:, :, k], color=color, mag=0.02)
+        offset = hand_offset(side)
+        add_hand(pl, mano_output.verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
+        add_axes(pl, T_g_a[0, :, :3, 3].cpu().numpy() + offset, T_g_a[0, :, :3, :3].cpu().numpy())
 
     # mirrored poses share their PCA coefficients; as axis-angles, the y and z components change sign
     mirror = (
@@ -96,6 +68,7 @@ def main(args):
     is_mirror = torch.allclose(poses["left"], poses["right"] * mirror, atol=1e-4)
     print(f"Is the composed left hand the mirror of the right hand? {is_mirror}")
 
+    add_legend(pl, hands_legend())
     show_or_record(pl, args.gif)
 
 

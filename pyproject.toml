@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vis = ["imageio", "open3d", "pyvista", "trimesh", "tqdm"]
+vis = ["imageio", "pyvista", "trimesh", "tqdm"]
 
 [dependency-groups]
 dev = ["pytest", "ruff"]

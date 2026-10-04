@@ -29,7 +29,7 @@ cd manotorch
 
 ```shell
 uv sync                  # core dependencies + dev tools
-uv sync --extra vis      # + open3d, pyvista, trimesh, tqdm for the demo scripts
+uv sync --extra vis      # + pyvista, trimesh, imageio, tqdm for the demo scripts
 ```
 
 Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`. Run the tests with `uv run pytest` (they need the MANO model files, see below; set `MANO_ASSETS_ROOT` if they are not under `assets/mano`).
@@ -40,7 +40,7 @@ Install [PyTorch](https://pytorch.org/get-started/locally/) for your CUDA versio
 
 ```shell
 python -m pip install -e .            # core dependencies only
-python -m pip install -e ".[vis]"     # + open3d, pyvista, trimesh, tqdm for the demo scripts
+python -m pip install -e ".[vis]"     # + pyvista, trimesh, imageio, tqdm for the demo scripts
 ```
 
 To use manotorch as a dependency of another project: `python -m pip install "git+https://github.com/IRVLUTD/manotorch.git"`.

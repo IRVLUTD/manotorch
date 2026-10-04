@@ -12,10 +12,9 @@ are the anatomy aligned axes of the index finger: red = back (twist), green = up
 import argparse
 from math import pi
 
-import pyvista as pv
 import torch
 import tqdm
-from trimesh import Trimesh
+from _common import AXIS_LEGEND, add_axes, add_hand, add_legend, compress_gif, get_device, new_plotter, open_gif
 
 from manotorch.anatomy_loss import AnatomyConstraintLossEE
 from manotorch.axislayer import AxisLayerFK
@@ -29,14 +28,6 @@ from manotorch.manolayer import ManoLayer
 #   12 - 11 - 10 --/
 #    9-- 8 -- 7 --/
 INDEX_FINGER = [1, 2, 3]
-
-
-def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def main(args):
@@ -72,24 +63,20 @@ def main(args):
         T_g_a, _, ee = axis_layer(out.transforms_abs)
         return out.verts[0], T_g_a[0], ee
 
-    def mesh_of(verts):
-        return pv.wrap(Trimesh(verts.detach().cpu().numpy(), faces, process=False))
-
     def draw(verts, T_g_a, it, loss):
-        pl.add_mesh(mesh_of(verts), color="orange", opacity=0.6, smooth_shading=True, name="hand")
+        add_hand(pl, verts.detach().cpu().numpy(), faces, "right", opacity=0.7, name="hand")
         centers = T_g_a[INDEX_FINGER, :3, 3].detach().cpu().numpy()
         axes = T_g_a[INDEX_FINGER, :3, :3].detach().cpu().numpy()  # columns: back, up, left
-        for k, color in enumerate(["red", "green", "blue"]):
-            pl.add_arrows(centers, axes[:, :, k], color=color, mag=0.025, name=f"axis{k}")
-        pl.add_text(f"iteration {it:4d}   anatomy loss {loss:.5f}", font_size=12, name="status")
+        add_axes(pl, centers, axes, mag=0.025, name="axes")
+        add_legend(pl, [(f"iteration {it:4d}   anatomy loss {loss:.5f}", "black"), AXIS_LEGEND])
 
     verts, T_g_a, ee_init = forward()
     ee = ee_init
-    pl = pv.Plotter(off_screen=args.gif is not None, window_size=(900, 600))
+    pl = new_plotter(off_screen=args.gif is not None, window_size=(768, 512))
     draw(verts, T_g_a, 0, anatomy_loss(ee_init).item())
     pl.camera_position = [(0.0, 0.0, 0.36), (0.0, 0.01, 0.0), (0.0, 1.0, 0.0)]
     if args.gif is not None:
-        pl.open_gif(args.gif, fps=10)
+        open_gif(pl, args.gif)
         pl.write_frame()
     else:
         pl.show(interactive_update=True)
@@ -110,6 +97,7 @@ def main(args):
     print(f"index finger (twist, spread, bend) in degrees, before:\n{deg(ee_init)}\nafter:\n{deg(ee)}")
     if args.gif is not None:
         pl.close()
+        compress_gif(args.gif)
         print(f"saved {args.gif}")
     else:
         pl.show()

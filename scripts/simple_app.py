@@ -6,27 +6,29 @@
 
 The random pose is drawn in the anatomy aligned angle space, so it stays natural: each finger curls by a random
 amount with coupled flexion of its three joints, the MCP joints spread a little, and nothing twists. Both hands
-are composed from the same angles, so the left hand is the mirror of the right one. Arrows: red = back (twist),
-green = up (spread), blue = left (bend).
+are composed from the same angles, so the left hand is the mirror of the right one; they are drawn a few
+centimeters apart. Arrows: red = back (twist), green = up (spread), blue = left (bend).
 """
 
 import argparse
 
 import pyvista as pv
 import torch
-from trimesh import Trimesh
+from _common import (
+    ANCHOR_COLOR,
+    add_axes,
+    add_hand,
+    add_legend,
+    get_device,
+    hand_offset,
+    hands_legend,
+    new_plotter,
+    show_or_record,
+)
 
 from manotorch.anchorlayer import AnchorLayer
 from manotorch.axislayer import AxisLayerFK
 from manotorch.manolayer import ManoLayer
-
-
-def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def random_natural_angles(seed: int) -> torch.Tensor:
@@ -49,27 +51,13 @@ def random_natural_angles(seed: int) -> torch.Tensor:
     return torch.deg2rad(ee)
 
 
-def show_or_record(pl: pv.Plotter, gif: str | None):
-    if gif is None:
-        pl.add_camera_orientation_widget()
-        pl.show()
-        return
-    pl.window_size = (1024, 1024)
-    view_up = [-1, 0, 0]
-    path = pl.generate_orbital_path(factor=2.0, n_points=36, viewup=view_up, shift=0.1)
-    pl.open_gif(gif)
-    pl.orbit_on_path(path, write_frames=True, step=0.05, viewup=view_up)
-    pl.close()
-    print(f"saved {gif}")
-
-
 def main(args):
     device = get_device()
     print(f"Using device: {device}")
 
     angles = random_natural_angles(args.seed).to(device)  # sampled on the CPU: the pose does not depend on the device
 
-    pl = pv.Plotter(off_screen=args.gif is not None)
+    pl = new_plotter(off_screen=args.gif is not None)
     for side in ["right", "left"]:
         mano_layer = ManoLayer(
             rot_mode="axisang",
@@ -84,22 +72,19 @@ def main(args):
         hand_pose = axis_layer.compose(angles).reshape(1, 48)  # no global rotation
         mano_results = mano_layer(hand_pose)
         verts = mano_results.verts  # (B, 778, 3)
-        faces = mano_layer.get_mano_closed_faces()
         T_g_a, _, _ = axis_layer(mano_results.transforms_abs)  # (B, 16, 4, 4)
 
-        mesh = pv.wrap(Trimesh(verts[0].cpu().numpy(), faces.numpy(), process=False))
-        pl.add_mesh(mesh, opacity=0.3, smooth_shading=True, color="orange" if side == "right" else "cyan")
-
+        offset = hand_offset(side)
+        add_hand(pl, verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
         if args.mode == "axis":
-            centers = T_g_a[0, :, :3, 3].cpu().numpy()  # (16, 3)
-            axes = T_g_a[0, :, :3, :3].cpu().numpy()  # (16, 3, 3), columns: back, up, left
-            for k, color in enumerate(["red", "green", "blue"]):
-                pl.add_arrows(centers, axes[:, :, k], color=color, mag=0.02)
+            centers = T_g_a[0, :, :3, 3].cpu().numpy() + offset  # (16, 3)
+            add_axes(pl, centers, T_g_a[0, :, :3, :3].cpu().numpy())  # columns: back, up, left
         else:
-            anchors = AnchorLayer().to(device)(verts)[0].cpu().numpy()  # (32, 3)
-            for anchor in anchors:
-                pl.add_mesh(pv.Cube(center=anchor, x_length=3e-3, y_length=3e-3, z_length=3e-3), color="yellow")
+            anchors = AnchorLayer().to(device)(verts)[0].cpu().numpy() + offset  # (32, 3)
+            pl.add_mesh(pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=1.8e-3), scale=False), color=ANCHOR_COLOR)
 
+    lines = hands_legend()
+    add_legend(pl, lines if args.mode == "axis" else lines[:2] + [("anchors", ANCHOR_COLOR)])
     show_or_record(pl, args.gif)
 
 
