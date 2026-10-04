@@ -87,7 +87,8 @@ random_pose = torch.rand(batch_size, 3 + ncomps)  # 3 values for the global axis
 
 mano_output: MANOOutput = mano_layer(random_pose, random_shape)
 
-# In meters, relative to joint `center_idx` (no centering when center_idx is None)
+# In meters, relative to joint `center_idx` (no centering when center_idx is None);
+# pass `transl` (B, 3) as third argument to place the hand: mano_layer(random_pose, random_shape, transl)
 verts = mano_output.verts                    # (B, 778, 3)
 joints = mano_output.joints                  # (B, 21, 3)
 transforms_abs = mano_output.transforms_abs  # (B, 16, 4, 4)

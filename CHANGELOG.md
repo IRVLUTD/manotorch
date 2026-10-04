@@ -6,6 +6,11 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Translation input and on-device closed faces (2026-10-04)
+
+- `ManoLayer.forward(pose, betas, transl)` (upstream issue #19): a `(B, 3)` or `(1, 3)` translation in meters, added to `verts`, `joints` and `transforms_abs` after the `center_idx` centering, so the center joint lands at `transl`. With `center_idx=None` this matches manopth's `th_trans` (checked: 1.2e-7 m, float32 rounding); unlike manopth, a translation does not disable the centering. `joints_only` is now keyword-only.
+- `ManoLayer.th_closed_faces` (upstream issue #4): the wrist-closed faces as a non-persistent buffer that follows the layer's device. `get_mano_closed_faces()` still returns a new CPU tensor, as before.
+
 ### Joints-only forward (2026-10-04)
 
 - `ManoLayer.forward(pose, betas, joints_only=True)`: computes the joints from the joint-regressed shape basis and skins only the 5 fingertip vertices; `verts` is `None`. Joints and `transforms_abs` match the full forward to 1e-16 m in float64. On an RTX 4090 with N=16384: 1.7 ms instead of 19.5 ms, 104 MiB instead of 1.4 GiB peak memory; no gain below a few hundred hands. The full forward is unchanged (bit-identical). The derived bases are recomputed on every call, so in-place edits of the `th_*` buffers after construction (as done by downstream left-shapedirs fixes) are honored.

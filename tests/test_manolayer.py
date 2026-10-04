@@ -208,3 +208,36 @@ def test_joints_only_gradients(mano_root):
     pose = (torch.randn(2, 48, dtype=torch.float64) * 0.5).requires_grad_(True)
     betas = torch.randn(2, 10, dtype=torch.float64).requires_grad_(True)
     torch.autograd.gradcheck(lambda p, b: layer(p, b, joints_only=True).joints, (pose, betas))
+
+
+@pytest.mark.parametrize("center_idx", [None, 9])
+@pytest.mark.parametrize("joints_only", [False, True])
+def test_transl(mano_root, center_idx, joints_only):
+    layer = ManoLayer(mano_assets_root=mano_root, center_idx=center_idx).double()
+    pose, betas = torch.randn(4, 48, dtype=torch.float64) * 0.5, torch.randn(4, 10, dtype=torch.float64)
+    base = layer(pose, betas, joints_only=joints_only)
+    for transl in (torch.randn(4, 3, dtype=torch.float64), torch.randn(1, 3, dtype=torch.float64)):
+        out = layer(pose, betas, transl, joints_only=joints_only)
+        offset = transl.reshape(-1, 1, 3)
+        torch.testing.assert_close(out.joints, base.joints + offset)
+        if not joints_only:
+            torch.testing.assert_close(out.verts, base.verts + offset)
+        torch.testing.assert_close(out.transforms_abs[..., :3, :3], base.transforms_abs[..., :3, :3])
+        torch.testing.assert_close(out.transforms_abs[..., :3, 3], base.transforms_abs[..., :3, 3] + offset)
+        torch.testing.assert_close(out.transforms_abs[..., 3, :], base.transforms_abs[..., 3, :])
+        torch.testing.assert_close(out.center_joint, base.center_joint)
+        if center_idx is not None:  # the center joint lands at transl
+            torch.testing.assert_close(out.joints[:, center_idx], transl.expand(4, 3))
+
+
+def test_closed_faces(mano_root):
+    for side in ("right", "left"):
+        layer = ManoLayer(side=side, mano_assets_root=mano_root)
+        faces = layer.get_mano_closed_faces()
+        assert faces.device.type == "cpu" and torch.equal(faces, layer.th_closed_faces)
+        torch.testing.assert_close(faces[:1538], layer.th_faces, atol=0, rtol=0)
+        faces += 1  # a copy: the buffer is not modified
+        assert not torch.equal(faces, layer.th_closed_faces)
+        if torch.cuda.is_available():
+            layer = layer.cuda()
+            assert layer.th_closed_faces.is_cuda and layer.get_mano_closed_faces().device.type == "cpu"

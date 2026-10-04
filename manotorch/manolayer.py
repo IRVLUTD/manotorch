@@ -140,6 +140,11 @@ class ManoLayer(torch.nn.Module):
         self.register_buffer(
             "_homo_row", torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32).view(1, 1, 1, 4), persistent=False
         )
+        # faces closing the wrist; follows the layer's device (get_mano_closed_faces() returns a CPU copy)
+        close_faces = torch.tensor(CLOSE_FACES)
+        if side == "left":
+            close_faces = close_faces[:, [2, 1, 0]]
+        self.register_buffer("th_closed_faces", torch.cat([self.th_faces, close_faces]), persistent=False)
 
     def rotation_by_axisang(self, pose_coeffs):
         hand_pose_coeffs = pose_coeffs[:, self.rot_dim :]
@@ -265,6 +270,8 @@ class ManoLayer(torch.nn.Module):
         self,
         pose_coeffs: torch.Tensor,
         betas: Optional[torch.Tensor] = None,
+        transl: Optional[torch.Tensor] = None,
+        *,
         joints_only: bool = False,
         **kwargs,
     ) -> MANOOutput:
@@ -272,6 +279,9 @@ class ManoLayer(torch.nn.Module):
         Args:
             pose_coeffs: (B, 3 + 45), (B, 3 + ncomps) with use_pca, or (B, 16 x 4) quaternions with rot_mode="quat".
             betas: (B, 10), or (1, 10) to share one shape across the batch; None for the mean shape.
+            transl: (B, 3) or (1, 3) translation in meters, added to verts, joints and transforms_abs after the
+                center_idx centering (so the center joint lands at transl). With center_idx=None this matches
+                manopth's th_trans; manopth instead skips the centering when a non-zero th_trans is given.
             joints_only: skip the 778 vertices (verts is None) and skin only the 5 fingertip vertices. The joints
                 and transforms equal those of the full forward up to float rounding.
         """
@@ -281,14 +291,21 @@ class ManoLayer(torch.nn.Module):
             rot_blob = self.rotation_by_quaternion(pose_coeffs)
 
         skinning_blob = self.skinning_layer(rot_blob["full_rots"], betas, joints_only=joints_only)
+        verts, joints, transforms_abs = skinning_blob["verts"], skinning_blob["joints"], skinning_blob["transforms_abs"]
+        if transl is not None:
+            offset = transl.reshape(-1, 1, 3)
+            verts = None if verts is None else verts + offset
+            joints = joints + offset
+            column = torch.cat([offset, offset.new_zeros(offset.shape[0], 1, 1)], -1).unsqueeze(-1)  # (?, 1, 4, 1)
+            transforms_abs = torch.cat([transforms_abs[..., :3], transforms_abs[..., 3:] + column], -1)
         return MANOOutput(
-            verts=skinning_blob["verts"],
-            joints=skinning_blob["joints"],
+            verts=verts,
+            joints=joints,
             center_idx=self.center_idx,
             center_joint=skinning_blob["center_joint"],
             full_poses=rot_blob["full_poses"],
             betas=skinning_blob["betas"],
-            transforms_abs=skinning_blob["transforms_abs"],
+            transforms_abs=transforms_abs,
         )
 
     def get_rotation_center(self, betas: Optional[torch.Tensor] = None):
@@ -335,8 +352,7 @@ class ManoLayer(torch.nn.Module):
 
         The added faces are at the end (indices 1538 to 1551); they match the wrist part of the hand, which is
         not an external surface of the human.
+
+        Returns a new tensor on the CPU; `th_closed_faces` holds the same faces on the layer's device.
         """
-        close_faces = torch.tensor(CLOSE_FACES)
-        if self.side == "left":
-            close_faces = close_faces[:, [2, 1, 0]]
-        return torch.cat([self.th_faces.detach().cpu(), close_faces])
+        return self.th_closed_faces.to("cpu", copy=True)
