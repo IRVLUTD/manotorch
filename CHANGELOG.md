@@ -6,9 +6,10 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
-### Faster skinning on the GPU (2026-10-04)
+### Faster skinning with less memory (2026-10-04)
 
-- On CUDA, the skinning applies the blended transforms with an elementwise multiply-and-sum instead of `torch.einsum`, which ran as millions of 3x3 batched matrix-vector products. Full `ManoLayer` on an RTX 4090: N=2048 forward 1.24x and forward + backward 1.48x faster, N=16384 1.31x and 1.55x; small batches unchanged; peak memory +14 % at large batches. Results change by float32 rounding only. The CPU keeps the einsum, which is the fastest there (the elementwise form was 0.7x): CPU outputs are bit-identical.
+- The last skinning step, `v = T[..., :3] @ p + T[..., 3]`, is a small `torch.autograd.Function`: an `addcmul` chain forward and a hand-written elementwise backward (itself differentiable: second-order gradients work). Through `torch.einsum`, autograd ran millions of 3x3 batched matrix-vector products; a broadcast multiply-and-sum (tried first) was fast but held a `(B, 778, 3, 3)` temporary.
+- Full `ManoLayer` on an RTX 4090, against the einsum version: N=2048 forward 1.28x and forward + backward 1.60x faster, N=16384 1.29x and 1.61x; the memory held between forward and backward and the forward peak are unchanged, the backward peak is 13 % lower (2236 -> 1944 MiB at N=16384). CPU (one thread): forward + backward 1.11-1.17x faster. Results change by float32 rounding only.
 
 ### Comparison with other MANO layers (2026-10-04)
 

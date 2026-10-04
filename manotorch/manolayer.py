@@ -52,6 +52,38 @@ class MANOOutput:
     transforms_abs: Optional[torch.Tensor] = None
 
 
+def _apply_transforms(T: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
+    """T[..., :3] @ points + T[..., 3] for (..., 3, 4) transforms and (..., 3) points, without (..., 3, 3) temporaries."""
+    out = torch.addcmul(T[..., 3], T[..., 0], points[..., 0:1])
+    out = torch.addcmul(out, T[..., 1], points[..., 1:2])
+    return torch.addcmul(out, T[..., 2], points[..., 2:3])
+
+
+class _SkinApply(torch.autograd.Function):
+    """Linear blend skinning's last step, v = T[..., :3] @ p + T[..., 3], with a hand-written elementwise backward.
+
+    Autograd through einsum ran millions of 3x3 batched GEMVs, and through broadcasting it kept (..., 3, 3)
+    temporaries. This saves only T and p, as autograd did, and its backward is itself differentiable.
+    """
+
+    @staticmethod
+    def forward(ctx, T, points):
+        ctx.save_for_backward(T, points)
+        return _apply_transforms(T, points)
+
+    @staticmethod
+    def backward(ctx, grad):
+        T, points = ctx.saved_tensors
+        grad_T = grad_points = None
+        if ctx.needs_input_grad[0]:  # dv_i / dT_ij = p_j (j < 3), 1 (j = 3)
+            grad_T = torch.cat([grad.unsqueeze(-1) * points.unsqueeze(-2), grad.unsqueeze(-1)], -1)
+        if ctx.needs_input_grad[1]:  # dv_i / dp_j = T_ij
+            grad_points = T[..., 0, :3] * grad[..., 0:1]
+            grad_points = torch.addcmul(grad_points, T[..., 1, :3], grad[..., 1:2])
+            grad_points = torch.addcmul(grad_points, T[..., 2, :3], grad[..., 2:3])
+        return grad_T, grad_points
+
+
 def th_with_zeros(tensor):
     """Append the homogeneous row [0, 0, 0, 1] to a batch of (3, 4) transforms."""
     padding = tensor.new_zeros(tensor.shape[0], 1, 4)
@@ -239,10 +271,7 @@ class ManoLayer(torch.nn.Module):
         # ============== Linear blend skinning, Eq. 7 in SMPL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         G_prime = torch.cat([rot, tsl_prime.unsqueeze(-1)], -1).view(batch_size, 16, 12)
         T = (weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, V, 3, 4)
-        if T_P.is_cuda:  # on the GPU the einsum runs as millions of 3x3 batched GEMVs: 2-4x slower
-            skinned = (T[..., :3] * T_P.unsqueeze(-2)).sum(-1) + T[..., 3]  # (B, V, 3)
-        else:  # on the CPU the einsum is the fastest, forward and backward
-            skinned = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, V, 3)
+        skinned = _SkinApply.apply(T, T_P)  # (B, V, 3)
 
         # In addition to MANO reference joints we sample vertices on each finger to serve as finger tips,
         # then reorder joints to match SNAP definition

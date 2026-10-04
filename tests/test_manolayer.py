@@ -241,3 +241,11 @@ def test_closed_faces(mano_root):
         if torch.cuda.is_available():
             layer = layer.cuda()
             assert layer.th_closed_faces.is_cuda and layer.get_mano_closed_faces().device.type == "cpu"
+
+
+def test_second_order_gradients(mano_root):
+    # the skinning uses a hand-written backward, which must itself be differentiable
+    layer = ManoLayer(mano_assets_root=mano_root).double()
+    pose = (torch.randn(1, 48, dtype=torch.float64) * 0.5).requires_grad_(True)
+    betas = torch.randn(1, 10, dtype=torch.float64).requires_grad_(True)
+    assert torch.autograd.gradgradcheck(lambda p, b: layer(p, b).verts[:, ::97], (pose, betas))
