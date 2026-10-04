@@ -129,6 +129,26 @@ The MANO website provides the poses the model was trained with (_Training Scans 
 | `handsOnly_REGISTRATIONS_r_lm___POSES___{R,L}.npy`: (1554, 45) articulation only | prepend 3 zeros for the global rotation; `L` is `R` mirrored for the left model, i.e. the y and z components of each joint's axis-angle negated |
 | synthetic sequences `handPose_*.pkl`: lists of (78,) vectors, `[0:66]` all zero | no metadata ships with them; they match the SMPL+H pose layout of the official code (66 body values, then 6 PCA coefficients of the left hand `[66:72]` and of the right hand `[72:78]`, `flat_hand_mean=False` by default): `ManoLayer(side=..., use_pca=True, ncomps=6, flat_hand_mean=False)` with 3 zeros prepended. With `flat_hand_mean=False` the poses lie as close to the training poses as 6 PCA components allow |
 
+### Other MANO layers
+
+Conventions of the MANO layers in common use, read from their source code (2026-10):
+
+| | manotorch (this fork) | [manotorch](https://github.com/lixiny/manotorch) (upstream) | [manopth](https://github.com/hassony2/manopth) | [smplx](https://github.com/vchoutas/smplx) `MANO` | smplx `MANOLayer` | official MANO code |
+| --- | --- | --- | --- | --- | --- | --- |
+| License | Apache-2.0 | Apache-2.0 | GPL-3.0 | SMPL-X, non-commercial | SMPL-X, non-commercial | MANO, non-commercial |
+| Needs chumpy | no | yes | yes | to read the `.pkl` | to read the `.pkl` | yes |
+| Pose input | axis-angles, PCA or quaternions | axis-angles, PCA or quaternions | axis-angles or PCA | axis-angles or PCA | rotation matrices | PCA, or full pose |
+| Default PCA | off (15 components when on) | off (15) | on, 6 components | on, 6 components; **45 turns PCA off** | — | on, 6 components |
+| Mean pose added by default | no (`flat_hand_mean=True`) | no | no | **yes** (`flat_hand_mean=False`) | never | yes |
+| Units | m | m | **mm** | m | m | m |
+| Translation | `transl` | none | `th_trans` (skips `center_idx`) | `transl` | `transl` | `trans` |
+| Joints | 21, tips 744/320/443/554/671 | 21, tips 745/317/444/556/673 (445 on the left) | as upstream manotorch | **16** | 16 | 16 |
+| Left-hand shapedirs fix ([smplx#48](https://github.com/vchoutas/smplx/issues/48)) | optional, off | no | no | no | no | no |
+
+Notable users: manopth (DexYCB, ObMan), upstream manotorch (OakInk, OakInk2, ArtiBoost, CPF), smplx `MANO` (InterHand2.6M, ARCTIC, GRAB, HOT3D), smplx `MANOLayer` (HaMeR, WiLoR). Two pitfalls when moving data between them: smplx `MANO` adds the mean pose unless `flat_hand_mean=True`, and with `num_pca_comps=45` it reads the 45 values as axis-angles, not as PCA coefficients.
+
+Accuracy against the official chumpy model in float64, for random poses, shapes and translations of both hands, in full axis-angle, 15-component PCA and rotation-matrix input ([scripts/compare_mano_layers.py](scripts/compare_mano_layers.py), 32 hands per setting): all five implementations agree to 1.3e-5 mm in float64 and to 1.7e-4 mm in float32 (largest error over the vertices and the 16 MANO joints). Fingertips are not compared, since the implementations sample different vertices.
+
 ### Demos
 
 | [Visualize](scripts/simple_app.py) | [Compose Hand](scripts/simple_compose.py) | [Error Correction](scripts/simple_anatomy_loss.py) |

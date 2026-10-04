@@ -6,6 +6,11 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Comparison with other MANO layers (2026-10-04)
+
+- `scripts/compare_mano_layers.py`: compares this fork, upstream manotorch, manopth, smplx `MANO` and smplx `MANOLayer` with the official chumpy model (the `webuser` code of the MANO download, loaded with minimal Python 3 syntax fixes) in full axis-angle, 15-component PCA and rotation-matrix input, both hands, float64 and float32. All agree to 1.3e-5 mm (float64) and 1.7e-4 mm (float32).
+- README: table of the conventions of these layers (license, chumpy, pose input, PCA and mean-pose defaults, units, translation, joints and fingertips, left-hand shapedirs) and two pitfalls found while comparing: smplx `MANO` adds the mean pose by default, and turns PCA off when `num_pca_comps == 45`.
+
 ### Runtime guards (2026-10-04)
 
 - `tests/test_runtime.py`: forward and backward through every layer (PCA, quaternion, left hand with centering, `joints_only`, `transl`, `AxisLayerFK` forward and `compose`, `AnchorLayer`, `AnatomyConstraintLossEE`) must not synchronize the host with the GPU (`torch.cuda.set_sync_debug_mode("error")`) and must not emit any warning (`torch.set_warn_always(True)`, warnings as errors); `gradcheck` at rotations of 0, 1e-9 and 1e-7 rad, for the full and the joints-only forward. `tests/test_geometry.py` checks the rotation conversions against `torch.linalg.matrix_exp`, round trips in all 12 Euler conventions, non-unit quaternions and gimbal lock.
