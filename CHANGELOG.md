@@ -6,6 +6,10 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Faster skinning on the GPU (2026-10-04)
+
+- On CUDA, the skinning applies the blended transforms with an elementwise multiply-and-sum instead of `torch.einsum`, which ran as millions of 3x3 batched matrix-vector products. Full `ManoLayer` on an RTX 4090: N=2048 forward 1.24x and forward + backward 1.48x faster, N=16384 1.31x and 1.55x; small batches unchanged; peak memory +14 % at large batches. Results change by float32 rounding only. The CPU keeps the einsum, which is the fastest there (the elementwise form was 0.7x): CPU outputs are bit-identical.
+
 ### Comparison with other MANO layers (2026-10-04)
 
 - `scripts/compare_mano_layers.py`: compares this fork, upstream manotorch, manopth, smplx `MANO` and smplx `MANOLayer` with the official chumpy model (the `webuser` code of the MANO download, loaded with minimal Python 3 syntax fixes) in full axis-angle, 15-component PCA and rotation-matrix input, both hands, float64 and float32. All agree to 1.3e-5 mm (float64) and 1.7e-4 mm (float32).

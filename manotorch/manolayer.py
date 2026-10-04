@@ -239,7 +239,10 @@ class ManoLayer(torch.nn.Module):
         # ============== Linear blend skinning, Eq. 7 in SMPL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         G_prime = torch.cat([rot, tsl_prime.unsqueeze(-1)], -1).view(batch_size, 16, 12)
         T = (weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, V, 3, 4)
-        skinned = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, V, 3)
+        if T_P.is_cuda:  # on the GPU the einsum runs as millions of 3x3 batched GEMVs: 2-4x slower
+            skinned = (T[..., :3] * T_P.unsqueeze(-2)).sum(-1) + T[..., 3]  # (B, V, 3)
+        else:  # on the CPU the einsum is the fastest, forward and backward
+            skinned = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, V, 3)
 
         # In addition to MANO reference joints we sample vertices on each finger to serve as finger tips,
         # then reorder joints to match SNAP definition

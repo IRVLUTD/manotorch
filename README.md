@@ -116,7 +116,7 @@ dominated by kernel launches, which `torch.compile` removes:
 mano_layer = torch.compile(ManoLayer(...).cuda(), mode="reduce-overhead")  # CUDA graphs; fixed input shapes
 ```
 
-Callers that need only the joints (fitting, retargeting) can skip the mesh: `mano_layer(pose, betas, joints_only=True)` skins only the 5 fingertip vertices and returns `verts=None`, with the same joints and `transforms_abs` up to float rounding. On an RTX 4090 a batch of 16384 hands takes 1.7 ms instead of 19.5 ms and 104 MiB instead of 1.4 GiB; batches of a few hundred hands are bound by kernel launches and gain nothing. A `(1, 10)` `betas` is shared across the batch.
+Callers that need only the joints (fitting, retargeting) can skip the mesh: `mano_layer(pose, betas, joints_only=True)` skins only the 5 fingertip vertices and returns `verts=None`, with the same joints and `transforms_abs` up to float rounding. On an RTX 4090 a batch of 16384 hands takes 1.7 ms instead of 15 ms and 104 MiB instead of 1.4 GiB; batches of a few hundred hands are bound by kernel launches and gain nothing. A `(1, 10)` `betas` is shared across the batch.
 
 ### Reading the MANO training poses
 
