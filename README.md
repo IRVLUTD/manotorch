@@ -62,7 +62,7 @@ manotorch is configured entirely through [pyproject.toml](pyproject.toml), so a 
 
    The original pickles are read directly with numpy, through a restricted unpickler that refuses anything but the
    numpy, chumpy and scipy data a MANO file contains; chumpy and scipy are not needed.
-3. (Optional) Convert them to `.npz` files, which load without pickle and faster. `ManoLayer` uses `MANO_{SIDE}.npz`
+3. (Optional) Convert them to `.npz` files, which load without pickle. `ManoLayer` uses `MANO_{SIDE}.npz`
    when it exists and falls back to `MANO_{SIDE}.pkl`; both give bit-identical outputs. The converter needs scipy:
 
    ```shell
@@ -110,7 +110,8 @@ and the `AnatomyConstraintLossEE` limits apply in the same anatomical direction.
 ### Speed
 
 The layer has no host-device synchronization and compiles into a single graph. On small batches the eager GPU time is
-dominated by kernel launches, which `torch.compile` removes:
+dominated by kernel launches, which `torch.compile` removes (on an RTX 4090, a forward of one hand takes 0.09 ms
+instead of 1 ms, and a forward + backward of 114 hands 0.6 ms instead of 4 ms):
 
 ```python
 mano_layer = torch.compile(ManoLayer(...).cuda(), mode="reduce-overhead")  # CUDA graphs; fixed input shapes

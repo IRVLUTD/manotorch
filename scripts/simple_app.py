@@ -81,7 +81,8 @@ def main(args):
             add_axes(pl, centers, T_g_a[0, :, :3, :3].cpu().numpy())  # columns: back, up, left
         else:
             anchors = AnchorLayer().to(device)(verts)[0].cpu().numpy() + offset  # (32, 3)
-            pl.add_mesh(pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=1.8e-3), scale=False), color=ANCHOR_COLOR)
+            spheres = pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=1.8e-3), orient=False, scale=False)
+            pl.add_mesh(spheres, color=ANCHOR_COLOR)
 
     lines = hands_legend()
     add_legend(pl, lines if args.mode == "axis" else lines[:2] + [("anchors", ANCHOR_COLOR)])

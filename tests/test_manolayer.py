@@ -200,7 +200,9 @@ def test_joints_only_follows_edited_buffers(mano_root):
     layer = ManoLayer(side="left", mano_assets_root=mano_root).double()
     layer.th_shapedirs[:, 0, :] *= -1
     pose, betas = torch.randn(4, 48, dtype=torch.float64) * 0.5, torch.randn(4, 10, dtype=torch.float64)
-    torch.testing.assert_close(layer(pose, betas, joints_only=True).joints, layer(pose, betas).joints, atol=1e-12, rtol=0)
+    torch.testing.assert_close(
+        layer(pose, betas, joints_only=True).joints, layer(pose, betas).joints, atol=1e-12, rtol=0
+    )
 
 
 def test_joints_only_gradients(mano_root):

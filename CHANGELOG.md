@@ -4,92 +4,62 @@ This repository is a modified version of [lixiny/manotorch](https://github.com/l
 As required by Section 4(b) of the [Apache License 2.0](LICENSE), this file lists the modifications made in this fork and their dates.
 The full history is available in the git log.
 
-## [Unreleased]
+## [Unreleased] (2026-10-03 to 2026-10-04)
 
-### Faster skinning with less memory (2026-10-04)
+`ManoLayer` keeps its constructor arguments (including `**kargs`), its `th_*` buffers with their names, shapes and state-dict keys, its methods and `MANOOutput`. Outputs match the previous version to float32 rounding and the official MANO code to 1.7e-4 mm in float32 (1.3e-5 mm in float64). Incompatible changes are listed under Behavior changes and Removed.
 
-- The last skinning step, `v = T[..., :3] @ p + T[..., 3]`, is a small `torch.autograd.Function`: an `addcmul` chain forward and a hand-written elementwise backward (itself differentiable: second-order gradients work). Through `torch.einsum`, autograd ran millions of 3x3 batched matrix-vector products; a broadcast multiply-and-sum (tried first) was fast but held a `(B, 778, 3, 3)` temporary.
-- Full `ManoLayer` on an RTX 4090, against the einsum version: N=2048 forward 1.28x and forward + backward 1.60x faster, N=16384 1.29x and 1.61x; the memory held between forward and backward and the forward peak are unchanged, the backward peak is 13 % lower (2236 -> 1944 MiB at N=16384). CPU (one thread): forward + backward 1.11-1.17x faster. Results change by float32 rounding only.
+### Performance
 
-### Comparison with other MANO layers (2026-10-04)
-
-- `scripts/compare_mano_layers.py`: compares this fork, upstream manotorch, manopth, smplx `MANO` and smplx `MANOLayer` with the official chumpy model (the `webuser` code of the MANO download, loaded with minimal Python 3 syntax fixes) in full axis-angle, 15-component PCA and rotation-matrix input, both hands, float64 and float32. All agree to 1.3e-5 mm (float64) and 1.7e-4 mm (float32).
-- README: table of the conventions of these layers (license, chumpy, pose input, PCA and mean-pose defaults, units, translation, joints and fingertips, left-hand shapedirs) and two pitfalls found while comparing: smplx `MANO` adds the mean pose by default, and turns PCA off when `num_pca_comps == 45`.
-
-### Runtime guards (2026-10-04)
-
-- `tests/test_runtime.py`: forward and backward through every layer (PCA, quaternion, left hand with centering, `joints_only`, `transl`, `AxisLayerFK` forward and `compose`, `AnchorLayer`, `AnatomyConstraintLossEE`) must not synchronize the host with the GPU (`torch.cuda.set_sync_debug_mode("error")`) and must not emit any warning (`torch.set_warn_always(True)`, warnings as errors); `gradcheck` at rotations of 0, 1e-9 and 1e-7 rad, for the full and the joints-only forward. `tests/test_geometry.py` checks the rotation conversions against `torch.linalg.matrix_exp`, round trips in all 12 Euler conventions, non-unit quaternions and gimbal lock.
-- `AnatomyConstraintLossEE` indexed the angles with Python lists, which copies the index to the GPU and synchronizes on every call; it now gathers them with slices (same output order and values).
-
-### Rotation conversions rewritten (2026-10-04)
-
-- `manotorch/utils/geometry.py` is a new, independent implementation written from the textbook formulas (Rodrigues' formula, quaternion-matrix identities, Shepperd's method, closed-form Euler angle extraction); it contains no PyTorch3D code any more, so the PyTorch3D BSD notice was removed from the file header, `NOTICE` and the README. Function names and signatures are unchanged.
-- Results equal the previous implementation to 1e-15 in float64 (4e-13 for Euler angles near gimbal lock); `ManoLayer` outputs therefore differ from the previous commit only by float32 rounding. Behavior changes: `matrix_to_quaternion` returns the representative with `w >= 0` (the previous one returned either sign); `quaternion_to_axis_angle` accepts non-unit quaternions (the previous one scaled the angle by `|q|`) and returns angles in `[0, pi]`; `matrix_to_euler_angles` clamps the `asin`/`acos` argument, so matrices off by rounding at gimbal lock no longer give NaN.
-- Speed (RTX 4090; CPU single-threaded): on CUDA `axis_angle_to_matrix` uses 18 kernels instead of 53 (2.0-2.7x faster) and `quaternion_to_matrix` 17 instead of 44 (2.1x); a small-batch `ManoLayer` forward is 1.29x faster (forward + backward 1.26x), large batches unchanged. On the CPU `ManoLayer` is unchanged (within 2 %), `matrix_to_quaternion` and `rotation_to_axis_angle` are 1.2-1.8x faster. Slower: `quaternion_to_axis_angle` on CUDA (12 kernels instead of 6, +0.06 ms; it now handles non-unit and negative-`w` quaternions), and on the CPU with 16k rotations `quaternion_to_matrix` (0.59x) and `axis_angle_to_matrix` (0.83x).
-
-### Translation input and on-device closed faces (2026-10-04)
-
-- `ManoLayer.forward(pose, betas, transl)` (upstream issue #19): a `(B, 3)` or `(1, 3)` translation in meters, added to `verts`, `joints` and `transforms_abs` after the `center_idx` centering, so the center joint lands at `transl`. With `center_idx=None` this matches manopth's `th_trans` (checked: 1.2e-7 m, float32 rounding); unlike manopth, a translation does not disable the centering. `joints_only` is now keyword-only.
-- `ManoLayer.th_closed_faces` (upstream issue #4): the wrist-closed faces as a non-persistent buffer that follows the layer's device. `get_mano_closed_faces()` still returns a new CPU tensor, as before.
-
-### Joints-only forward (2026-10-04)
-
-- `ManoLayer.forward(pose, betas, joints_only=True)`: computes the joints from the joint-regressed shape basis and skins only the 5 fingertip vertices; `verts` is `None`. Joints and `transforms_abs` match the full forward to 1e-16 m in float64. On an RTX 4090 with N=16384: 1.7 ms instead of 19.5 ms, 104 MiB instead of 1.4 GiB peak memory; no gain below a few hundred hands. The full forward is unchanged (bit-identical). The derived bases are recomputed on every call, so in-place edits of the `th_*` buffers after construction (as done by downstream left-shapedirs fixes) are honored.
-
-### PyTorch 2.x API (2026-10-04)
-
-- `torch.norm` -> `torch.linalg.vector_norm`, `torch.cross` -> `torch.linalg.cross`, and `torch.Tensor(ndarray)` -> `torch.as_tensor(..., dtype=torch.float32)`.
-- Every floating-point buffer and constant is created with an explicit `float32` dtype: `torch.Tensor(...)`, `torch.zeros(...)` and `torch.tensor(...)` followed the global default dtype, so after `torch.set_default_dtype(torch.float64)` some buffers became float64 and `AxisLayerFK` failed on mixed dtypes.
-- Outputs are bit-identical to the previous commit (238 reference tensors), and `J_regressor` keeps its Fortran-order layout.
-
-### Demo scripts (2026-10-04)
-
-- `vis` extra: added `imageio`, which pyvista needs to write GIFs (the scripts failed at `open_gif`).
-- `scripts/simple_anatomy_loss.py`: the optimization never reset the gradients (`optimizer.zero_grad()` was missing), so they accumulated over the 5000 iterations; fixed, now 1000 iterations at `lr=1e-2`, which bring all three index finger joints into their limits. Rendered with pyvista instead of Open3D, so it can write a GIF off-screen; removed unused imports and a loop variable that shadowed the iteration counter.
-- `scripts/simple_app.py`, `scripts/simple_compose.py`: interactive window by default, `--gif <path>` to render a GIF off-screen (they always wrote `simple_app_new.gif` / `simple_compose_new.gif` to the working directory before); `simple_app.py` drew all 45 PCA coefficients from N(0, 1), which often pushed fingers into the palm; it now samples a natural pose in the anatomy aligned angle space (random per-finger curl with coupled joint flexion, small MCP spread, no twist, no global rotation) and composes both hands from it with `AxisLayerFK.compose`, on the CPU so the pose does not depend on the device; `simple_compose.py` checks that the composed left hand is the mirror of the right one, in PCA or axis-angle mode (`--no-pca`), and drops the obsolete left-hand angle flip comment.
-- `scripts/test_compatibility.ipynb`: updated to the smplx fingertips (the joint assertion against manopth failed since the fork changed them; the comparison with Omid's MANO now needs only the joint reordering), puts this repository first on `sys.path` so an installed manotorch is not tested instead, and outputs cleared. Checked against manopth `4f1dcad` and MANO `5869ab0`: vertices and joints agree to 5e-8 m.
-- New `scripts/_common.py` shared by the three scripts (device choice, colors, hand and axis drawing, legend, GIF recording). Rendering: light salmon / light blue hands (a color-blind safe pair) so the red / green / blue axes stand out, the two mirrored hands drawn 4 cm apart instead of overlapping at the wrist, back-face culling and depth peeling so translucent hands no longer show their inner faces as dark patches, thinner axis arrows, and a legend in every GIF.
-- GIFs: 768 px, written by an explicit camera orbit (pyvista's `orbit_on_path` refits the view, so its orbit radius had no effect and the legend overlapped the hands), and re-encoded with one palette shared by all frames: about 1 MB each instead of 2.5 MB.
-- Removed `manotorch/utils/visutils.py` (Open3D viewer helpers) and `open3d` from the `vis` extra: nothing in this repository or its known users imports them any more (about 900 MB less in the environment).
-- Regenerated `doc/axis_new.gif`, `doc/simple_compose_new.gif` and `doc/pose_correction.gif` with the current code (the last one was still upstream's image).
-
-### License (2026-10-03)
-
-- The fork now follows upstream's license: upstream relicensed manotorch from GPL-3.0 to the Apache License 2.0 in commit `a2a70c5` (2026-02-03), which is merged here. Versions of this fork published before this change remain available under GPL-3.0.
-- Added `NOTICE` with the required attributions (manotorch and manopth origin, PyTorch3D's BSD 3-Clause code, the MANO license), shipped with the package; `pyproject.toml` declares `license = "Apache-2.0"`.
-
-### 2026-10-03
-
-- Rewrote `README.md` for the fork: fork notice, updated installation steps, and a License section that separates GPL-3.0 code, MANO-licensed files and third-party code. The previous README is archived as `README.old.md`.
-- Added this `CHANGELOG.md`.
-- `manotorch/utils/geometry.py`: added the PyTorch3D copyright and BSD license notice that this file was adapted from.
-- Packaging moved entirely to `pyproject.toml` (PEP 621, setuptools backend); `setup.py` was removed. The original authors are credited alongside the fork maintainer. Core dependencies are `torch` and `numpy`; visualization packages moved to the `vis` extra and development tools to the `dev` dependency group. Only the `manotorch` package is installed.
-- Added `manotorch/utils/mano_io.py`, which reads the official MANO pickles with numpy only, through a restricted unpickler that refuses any class a MANO file does not contain. `ManoLayer` no longer depends on chumpy, scipy, OpenCV or the bundled `mano/webuser` code, and no longer needs the `MANO_*_new.pkl` conversion. The model arrays, including the memory layout of `J_regressor`, are identical to the previous loader's.
-- `ManoLayer` also loads `MANO_{SIDE}.npz` model files (dense arrays, no pickle), preferring them over `.pkl` when both exist; `tools/mano_pkl_to_npz.py` creates them. Both formats give bit-identical outputs.
-- Replaced the conda environment files (`environment.yaml`, `environment.py310.cu121.yaml`) with a uv setup: `uv sync` creates a Python 3.12 + PyTorch 2.11.0 (CUDA 12.6) environment from the committed `uv.lock`. PyTorch comes from the CUDA 12.6 index on Linux and Windows; the version pin applies to the development environment only.
-
-### Optimization (2026-10-03)
-
-Apart from the removed deprecated code, the `AnchorLayer` default path and the left-hand Euler angles of `AxisLayerFK.forward` listed below, the public API is unchanged: `ManoLayer` keeps its constructor arguments (including `**kargs`), its `th_*` buffers with their names, shapes and state-dict keys, `kintree_parents`, its methods, and `MANOOutput`; `AxisLayerFK` keeps its buffers and 3-tuple output. Outputs match the previous implementation to float32 rounding (max relative difference 2e-6 over 238 reference tensors, gradients included).
-
-- `ManoLayer`: rewritten skinning: pose and shape blend shapes as single matrix products, forward kinematics on rotations and translations over the 5 finger chains, linear blend skinning without the (B, 4, 4, 778) intermediate, and constant index tensors registered as non-persistent buffers. No host-device synchronization remains, and the layer compiles into a single graph with `torch.compile`.
-- `manotorch/utils/geometry.py`: ported the synchronization-free PyTorch3D conversions (`torch.sinc`, `torch.where`, `torch.gather`); `matrix_to_quaternion` still returns non-standardized quaternions, as before.
-- New `ManoLayer(fix_left_shapedirs=False)` argument: when True, negates the x component of the left-hand shape blend shapes ([smplx#48](https://github.com/vchoutas/smplx/issues/48)) so that left and right hands with the same betas are mirrors. Off by default, matching the official model.
-- `AxisLayerFK.compose()` no longer modifies its input tensor for the left hand; `AxisLayerFK` and `AxisAdaptiveLayer` build their constants once, as buffers.
-- `AxisLayerFK.forward()` returns the left-hand rotations and Euler angles in the right-hand convention, the one `compose()` already expected: the twist and spread angles change sign for the left hand (`R -> P R P`, `P = diag(-1, -1, 1)`). Mirrored left and right poses now give equal angles, `compose(forward(T))` returns the pose for both hands (before, only for the right hand), and the `AnatomyConstraintLossEE` limits act in the same anatomical direction for both hands. `T_g_a` and the `TMPL_*` buffers are unchanged.
-- Removed the deprecated `AxisLayer` class and the deprecated `manotorch/utils/quatutils.py` and `manotorch/utils/rodrigues.py`, and with them the `deprecation` dependency.
-- Anchor definitions moved into the package (`manotorch/assets/anchor`); `AnchorLayer()` loads them by default (its `anchor_root` default changed from `"assets/anchor"` to `None`), so it works from any directory and from a regular (non-editable) install.
-- Removed the bundled official MANO code (`mano/webuser`, MANO license) and `tools/clean_ch.py`, both unused since the numpy-only loader.
-- Added a pytest suite (`tests/`) that checks `ManoLayer` against an independent float64 MANO implementation, the npz/pickle loaders, `AxisLayerFK` and the left/right mirror symmetry.
-
-Measured on an RTX 4090 with PyTorch 2.7 (shared machine, so absolute times are noisy):
+`ManoLayer` (45 PCA components, pose and shape gradients) before (`ad515f0`) and after, on the same RTX 4090 with PyTorch 2.7 (shared machine, rounded):
 
 | | before | after |
 | --- | --- | --- |
-| `ManoLayer` construction | 417 ms | 18 ms |
-| CUDA forward, batch 1 | 8.8 ms | 5.0 ms (0.22 ms with `torch.compile(mode="reduce-overhead")`) |
-| CUDA forward, batch 8192, peak memory (forward + backward) | 1607 MiB | 1151 MiB |
-| CPU forward, batch 1024 | 488 ms | 311 ms |
+| CUDA forward, batch 1 | 6.8 ms | 3.3 ms (0.09 ms with `torch.compile(mode="reduce-overhead")`, PyTorch 2.11) |
+| CUDA forward + backward, batch 1 | 23 ms | 13 ms |
+| CUDA forward, batch 8192 | 17 ms | 7.9 ms |
+| CUDA forward + backward, batch 8192 | 33 ms | 20 ms |
+| CUDA peak memory, forward + backward, batch 8192 | 1593 MiB | 1059 MiB |
+| CPU (8 threads) forward / forward + backward, batch 1024 | 150 / 250 ms | 50 / 105 ms |
+
+- Rewritten forward: pose and shape blend shapes as single matrix products, forward kinematics on rotations and translations over the five finger chains, and skinning without the `(B, 4, 4, 778)` intermediate. The last skinning step is a small `torch.autograd.Function` (elementwise forward and backward, itself differentiable).
+- No host-device synchronization on the GPU (in `ManoLayer`, `AxisLayerFK`, `AnchorLayer` and `AnatomyConstraintLossEE`), and the layer compiles into a single graph with `torch.compile`.
+- `manotorch/utils/geometry.py` rewritten from the textbook formulas (Rodrigues, Shepperd, closed-form Euler angles): `axis_angle_to_matrix` launches 18 CUDA kernels instead of 53.
+- New `joints_only=True` forward for callers that need only the joints: batch 16384 in 1.7 ms instead of 15 ms and 104 MiB instead of 1.4 GiB.
+
+### Added
+
+- `ManoLayer.forward(pose, betas, transl)`: a translation in meters added after the `center_idx` centering (upstream issue #19; with `center_idx=None`, as manopth's `th_trans`).
+- `ManoLayer.forward(..., joints_only=True)`: skins only the 5 fingertip vertices and returns `verts=None`.
+- `ManoLayer(fix_left_shapedirs=False)`: when True, mirrors the x component of the left-hand shape blend shapes ([smplx#48](https://github.com/vchoutas/smplx/issues/48)). Off by default, matching the official model.
+- `ManoLayer.th_closed_faces`: the wrist-closed faces as a buffer that follows the layer's device (upstream issue #4).
+- Model loading without chumpy, scipy or the MANO `webuser` code (`manotorch/utils/mano_io.py`): the official pickles are read through a restricted unpickler that refuses any class a MANO file does not contain. `MANO_{SIDE}.npz` files (no pickle) are preferred when present; `tools/mano_pkl_to_npz.py` creates them.
+- Tests (`tests/`): against an independent float64 MANO implementation, model loaders, rotation conversions, left/right mirror symmetry, first- and second-order gradients, and runtime guards (no GPU synchronization, no warnings).
+- `scripts/compare_mano_layers.py` and a README table comparing the conventions and accuracy of manopth, smplx `MANO` / `MANOLayer`, upstream manotorch and the official MANO code.
+
+### Behavior changes
+
+- `AxisLayerFK.forward()` returns left-hand Euler angles in the right-hand convention (twist and spread change sign): mirrored hands give equal angles, `compose()` inverts `forward()` for both hands, and the `AnatomyConstraintLossEE` limits act in the same anatomical direction for both hands.
+- `AxisLayerFK.compose()` no longer modifies its input.
+- `AnchorLayer()` loads the anchors shipped with the package (`manotorch/assets/anchor`); the `anchor_root` default changed from `"assets/anchor"` to `None`.
+- Rotation conversions: `matrix_to_quaternion` returns `w >= 0`; `quaternion_to_axis_angle` accepts non-unit quaternions and returns angles in `[0, pi]`; `matrix_to_euler_angles` no longer returns NaN at gimbal lock.
+- Buffers are float32 regardless of `torch.set_default_dtype`; deprecated `torch.norm`, `torch.cross` and `torch.Tensor(ndarray)` calls replaced by their PyTorch 2.x equivalents.
+
+### Removed
+
+- `AxisLayer`, `manotorch/utils/quatutils.py`, `manotorch/utils/rodrigues.py` (deprecated), `manotorch/utils/visutils.py` (Open3D viewers), the bundled MANO code (`mano/webuser`) and `tools/clean_ch.py`.
+- Dependencies `chumpy`, `deprecation`, `open3d`, `opencv-python`, `scipy` and `matplotlib`; `pyvista`, `trimesh` and `tqdm` moved to the `vis` extra.
+
+### Packaging, demos and documentation
+
+- Packaging in `pyproject.toml` only (PEP 621; `setup.py` removed); core dependencies are `torch` and `numpy`.
+- The conda environment files are replaced by a uv setup: `uv sync` creates Python 3.12 + PyTorch 2.11.0 (CUDA 12.6) from `uv.lock`.
+- Demo scripts fixed (missing `zero_grad` in `simple_anatomy_loss.py`, fingers sampled into the palm in `simple_app.py`), rendered with pyvista (`--gif` for off-screen GIFs), and the README GIFs regenerated.
+- `README.md` rewritten for the fork; the previous one is kept as `README.old.md`.
+
+### License (2026-10-03)
+
+- The fork follows upstream's relicensing from GPL-3.0 to the Apache License 2.0 (upstream commit `a2a70c5`, 2026-02-03, merged here). Versions of this fork published before this change remain available under GPL-3.0.
+- Added `NOTICE` (manotorch and manopth origin, third-party code, MANO license), shipped with the package.
 
 ## [0.0.3]
 
