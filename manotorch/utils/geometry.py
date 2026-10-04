@@ -244,7 +244,7 @@ def axis_angle_to_quaternion(axis_angle: torch.Tensor) -> torch.Tensor:
     Returns:
         quaternions with real part first, as tensor of shape (..., 4).
     """
-    angles = torch.norm(axis_angle, p=2, dim=-1, keepdim=True)
+    angles = torch.linalg.vector_norm(axis_angle, dim=-1, keepdim=True)
     sin_half_angles_over_angles = 0.5 * torch.sinc(angles * 0.5 / torch.pi)
     return torch.cat([torch.cos(angles * 0.5), axis_angle * sin_half_angles_over_angles], dim=-1)
 
@@ -314,7 +314,7 @@ def quaternion_to_axis_angle(quaternions: torch.Tensor) -> torch.Tensor:
             turned anticlockwise in radians around the vector's
             direction.
     """
-    norms = torch.norm(quaternions[..., 1:], p=2, dim=-1, keepdim=True)
+    norms = torch.linalg.vector_norm(quaternions[..., 1:], dim=-1, keepdim=True)
     half_angles = torch.atan2(norms, quaternions[..., :1])
     sin_half_angles_over_angles = 0.5 * torch.sinc(half_angles / torch.pi)
     return quaternions[..., 1:] / sin_half_angles_over_angles

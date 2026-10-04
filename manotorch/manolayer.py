@@ -114,12 +114,14 @@ class ManoLayer(torch.nn.Module):
         if side == "left" and fix_left_shapedirs:
             shapedirs[:, 0, :] *= -1
 
-        self.register_buffer("th_betas", torch.zeros(1, shapedirs.shape[-1]))
-        self.register_buffer("th_shapedirs", torch.Tensor(shapedirs))
-        self.register_buffer("th_posedirs", torch.Tensor(smpl_data["posedirs"]))
-        self.register_buffer("th_v_template", torch.Tensor(smpl_data["v_template"]).unsqueeze(0))
-        self.register_buffer("th_J_regressor", torch.Tensor(smpl_data["J_regressor"]))
-        self.register_buffer("th_weights", torch.Tensor(smpl_data["weights"]))
+        self.register_buffer("th_betas", torch.zeros(1, shapedirs.shape[-1], dtype=torch.float32))
+        self.register_buffer("th_shapedirs", torch.as_tensor(shapedirs, dtype=torch.float32))
+        self.register_buffer("th_posedirs", torch.as_tensor(smpl_data["posedirs"], dtype=torch.float32))
+        self.register_buffer(
+            "th_v_template", torch.as_tensor(smpl_data["v_template"], dtype=torch.float32).unsqueeze(0)
+        )
+        self.register_buffer("th_J_regressor", torch.as_tensor(smpl_data["J_regressor"], dtype=torch.float32))
+        self.register_buffer("th_weights", torch.as_tensor(smpl_data["weights"], dtype=torch.float32))
         self.register_buffer("th_faces", torch.from_numpy(smpl_data["f"].astype(np.int64)))
 
         self.kintree_parents = list(smpl_data["kintree_table"][0].tolist())
@@ -127,15 +129,17 @@ class ManoLayer(torch.nn.Module):
 
         if rot_mode == "axisang":
             hands_mean = np.zeros(hands_components.shape[1]) if flat_hand_mean else smpl_data["hands_mean"]
-            self.register_buffer("th_hands_mean", torch.Tensor(hands_mean).unsqueeze(0))
+            self.register_buffer("th_hands_mean", torch.as_tensor(hands_mean, dtype=torch.float32).unsqueeze(0))
 
         if rot_mode == "axisang" or use_pca:
-            self.register_buffer("th_selected_comps", torch.Tensor(hands_components[:ncomps]))
+            self.register_buffer("th_selected_comps", torch.as_tensor(hands_components[:ncomps], dtype=torch.float32))
 
         # constants used in forward, kept on the layer's device (not part of the state dict)
         self.register_buffer("_tip_vert_ids", torch.tensor(TIP_VERT_IDS), persistent=False)
         self.register_buffer("_joints_reorder", torch.tensor(JOINTS_REORDER), persistent=False)
-        self.register_buffer("_homo_row", torch.tensor([0.0, 0.0, 0.0, 1.0]).view(1, 1, 1, 4), persistent=False)
+        self.register_buffer(
+            "_homo_row", torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32).view(1, 1, 1, 4), persistent=False
+        )
 
     def rotation_by_axisang(self, pose_coeffs):
         hand_pose_coeffs = pose_coeffs[:, self.rot_dim :]
@@ -288,7 +292,7 @@ class ManoLayer(torch.nn.Module):
 
         batch_size = betas.shape[0]
         if self.center_idx is not None:
-            return torch.zeros((batch_size, 3), device=betas.device)
+            return betas.new_zeros((batch_size, 3))
 
         # root joint of $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
         return self.th_J_regressor[0] @ self._shaped_template(betas)  # (B, 3)

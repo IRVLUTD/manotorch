@@ -25,8 +25,8 @@ STATE_DICT_KEYS = {
 
 def rodrigues(aa):
     """(..., 3) axis-angles to (..., 3, 3) rotation matrices, R = I + sin(t) K + (1 - cos(t)) K^2."""
-    theta = aa.norm(dim=-1, keepdim=True).unsqueeze(-1)
-    k = aa / aa.norm(dim=-1, keepdim=True)
+    theta = torch.linalg.vector_norm(aa, dim=-1, keepdim=True).unsqueeze(-1)
+    k = aa / torch.linalg.vector_norm(aa, dim=-1, keepdim=True)
     zero = torch.zeros_like(k[..., 0])
     K = torch.stack([zero, -k[..., 2], k[..., 1], k[..., 2], zero, -k[..., 0], -k[..., 1], k[..., 0], zero], -1)
     K = K.view(*k.shape[:-1], 3, 3)

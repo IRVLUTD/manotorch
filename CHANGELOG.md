@@ -6,6 +6,12 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### PyTorch 2.x API (2026-10-04)
+
+- `torch.norm` -> `torch.linalg.vector_norm`, `torch.cross` -> `torch.linalg.cross`, and `torch.Tensor(ndarray)` -> `torch.as_tensor(..., dtype=torch.float32)`.
+- Every floating-point buffer and constant is created with an explicit `float32` dtype: `torch.Tensor(...)`, `torch.zeros(...)` and `torch.tensor(...)` followed the global default dtype, so after `torch.set_default_dtype(torch.float64)` some buffers became float64 and `AxisLayerFK` failed on mixed dtypes.
+- Outputs are bit-identical to the previous commit (238 reference tensors), and `J_regressor` keeps its Fortran-order layout.
+
 ### Demo scripts (2026-10-04)
 
 - `vis` extra: added `imageio`, which pyvista needs to write GIFs (the scripts failed at `open_gif`).

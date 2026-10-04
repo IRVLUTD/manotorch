@@ -33,10 +33,10 @@ class AxisAdaptiveLayer(torch.nn.Module):
         self.parent_joints_mappings = [0, 5, 6, 0, 9, 10, 0, 17, 18, 0, 13, 14, 0, 1, 2]
         self.side = side
         thumb_up = [1.0, 1.0, 1.0] if side == "right" else [-1.0, 1.0, 1.0]
-        up_axis_base = torch.tensor([[0.0, 1.0, 0.0]] * 13 + [thumb_up] * 3)
+        up_axis_base = torch.tensor([[0.0, 1.0, 0.0]] * 13 + [thumb_up] * 3, dtype=torch.float32)
         self.register_buffer("up_axis_base", up_axis_base.unsqueeze(0))
         # the back axis of the root is +x for both sides
-        self.register_buffer("_root_b_axis", torch.tensor([[[1.0, 0.0, 0.0]]]), persistent=False)
+        self.register_buffer("_root_b_axis", torch.tensor([[[1.0, 0.0, 0.0]]], dtype=torch.float32), persistent=False)
         self.register_buffer("_joints_mapping", torch.tensor(self.joints_mapping), persistent=False)
         self.register_buffer("_parent_joints_mapping", torch.tensor(self.parent_joints_mappings), persistent=False)
 
@@ -58,13 +58,13 @@ class AxisAdaptiveLayer(torch.nn.Module):
         b_axis = (transf[:, 1:, :3, :3].transpose(2, 3) @ b_axis.unsqueeze(-1)).squeeze(-1)
         b_axis = torch.cat((self._root_b_axis.expand(bs, 1, 3), b_axis), dim=1)  # (B, 16, 3)
 
-        l_axis = torch.cross(b_axis, self.up_axis_base.expand(bs, 16, 3), dim=2)
-        u_axis = torch.cross(l_axis, b_axis, dim=2)
+        l_axis = torch.linalg.cross(b_axis, self.up_axis_base.expand(bs, 16, 3), dim=2)
+        u_axis = torch.linalg.cross(l_axis, b_axis, dim=2)
 
         return (
-            b_axis / torch.norm(b_axis, dim=2, keepdim=True),
-            u_axis / torch.norm(u_axis, dim=2, keepdim=True),
-            l_axis / torch.norm(l_axis, dim=2, keepdim=True),
+            b_axis / torch.linalg.vector_norm(b_axis, dim=2, keepdim=True),
+            u_axis / torch.linalg.vector_norm(u_axis, dim=2, keepdim=True),
+            l_axis / torch.linalg.vector_norm(l_axis, dim=2, keepdim=True),
         )
 
 
@@ -74,11 +74,13 @@ class AxisLayerFK(Module):
         self.transf_parent_mapping = [0, 0, 1, 2, 0, 4, 5, 0, 7, 8, 0, 10, 11, 0, 13, 14]
         self.side = side
 
-        tmpl_mano = ManoLayer(side=side, mano_assets_root=mano_assets_root)(torch.zeros(1, 48), torch.zeros(1, 10))
+        tmpl_mano = ManoLayer(side=side, mano_assets_root=mano_assets_root)(
+            torch.zeros(1, 48, dtype=torch.float32), torch.zeros(1, 10, dtype=torch.float32)
+        )
         tmpl_transf_abs = tmpl_mano.transforms_abs  # tmpl_T_g_p
         tmpl_b_axis, tmpl_u_axis, tmpl_l_axis = AxisAdaptiveLayer(side=side)(tmpl_mano.joints, tmpl_transf_abs)
         tmpl_R_p_a = torch.stack((tmpl_b_axis, tmpl_u_axis, tmpl_l_axis), dim=3)  # (1, 16, 3, 3)
-        tmpl_T_p_a = _homogeneous(tmpl_R_p_a, torch.zeros(1, 16, 3, 1))  # (1, 16, 4, 4)
+        tmpl_T_p_a = _homogeneous(tmpl_R_p_a, tmpl_R_p_a.new_zeros(1, 16, 3, 1))  # (1, 16, 4, 4)
         tmpl_T_g_a = torch.matmul(tmpl_transf_abs, tmpl_T_p_a)  # (1, 16, 4, 4)
         self.register_buffer("TMPL_T_p_a", tmpl_T_p_a.float())
         self.register_buffer("TMPL_R_p_a", tmpl_R_p_a.float())
@@ -92,7 +94,7 @@ class AxisLayerFK(Module):
         # The left-hand anatomy frames are right-handed, so a motion mirrored from the right hand turns the opposite
         # way around the twist and spread axes. Angles are reported in the right-hand convention: R -> P R P with
         # P = diag(-1, -1, 1), which negates the twist and spread angles. Mirrored poses then give equal angles.
-        sign = torch.tensor([-1.0, -1.0, 1.0]) if side == "left" else torch.ones(3)
+        sign = torch.tensor([-1.0, -1.0, 1.0] if side == "left" else [1.0, 1.0, 1.0], dtype=torch.float32)
         self.register_buffer("_angle_sign", sign, persistent=False)
         self.register_buffer("_rot_sign", sign[:, None] * sign[None, :], persistent=False)
 
