@@ -6,6 +6,14 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Demo scripts (2026-10-04)
+
+- `vis` extra: added `imageio`, which pyvista needs to write GIFs (the scripts failed at `open_gif`).
+- `scripts/simple_anatomy_loss.py`: the optimization never reset the gradients (`optimizer.zero_grad()` was missing), so they accumulated over the 5000 iterations; fixed, now 1000 iterations at `lr=1e-2`, which bring all three index finger joints into their limits. Rendered with pyvista instead of open3d, so it can write a GIF off-screen; removed unused imports and a loop variable that shadowed the iteration counter.
+- `scripts/simple_app.py`, `scripts/simple_compose.py`: interactive window by default, `--gif <path>` to render a GIF off-screen (they always wrote `simple_app_new.gif` / `simple_compose_new.gif` to the working directory before); `simple_app.py` drew all 45 PCA coefficients from N(0, 1), which often pushed fingers into the palm; it now samples a natural pose in the anatomy aligned angle space (random per-finger curl with coupled joint flexion, small MCP spread, no twist, no global rotation) and composes both hands from it with `AxisLayerFK.compose`, on the CPU so the pose does not depend on the device; `simple_compose.py` checks that the composed left hand is the mirror of the right one, in PCA or axis-angle mode (`--no-pca`), and drops the obsolete left-hand angle flip comment.
+- `scripts/test_compatibility.ipynb`: updated to the smplx fingertips (the joint assertion against manopth failed since the fork changed them; the comparison with Omid's MANO now needs only the joint reordering), puts this repository first on `sys.path` so an installed manotorch is not tested instead, and outputs cleared. Checked against manopth `4f1dcad` and MANO `5869ab0`: vertices and joints agree to 5e-8 m.
+- Regenerated `doc/axis_new.gif`, `doc/simple_compose_new.gif` and `doc/pose_correction.gif` with the current code (the last one was still upstream's image).
+
 ### License (2026-10-03)
 
 - The fork now follows upstream's license: upstream relicensed manotorch from GPL-3.0 to the Apache License 2.0 in commit `a2a70c5` (2026-02-03), which is merged here. Versions of this fork published before this change remain available under GPL-3.0.

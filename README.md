@@ -132,6 +132,16 @@ The MANO website provides the poses the model was trained with (_Training Scans 
 | :--------------------------------: | :---------------------------------------: | :------------------------------------------------: |
 |       ![](doc/axis_new.gif)        |      ![](doc/simple_compose_new.gif)      |            ![](doc/pose_correction.gif)            |
 
+Each script opens an interactive window (install the `vis` extra); with `--gif <path>` it renders a GIF off-screen instead. The GIFs above come from:
+
+```shell
+uv run python scripts/simple_app.py --gif doc/axis_new.gif                # also: --mode anchor
+uv run python scripts/simple_compose.py --gif doc/simple_compose_new.gif
+uv run python scripts/simple_anatomy_loss.py --gif doc/pose_correction.gif
+```
+
+[scripts/test_compatibility.ipynb](scripts/test_compatibility.ipynb) checks manotorch against manopth and Omid's MANO.
+
 Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatomical-consistent-basis), [Anatomy Loss](README.old.md#anatomy-loss), [Composing the Hand](README.old.md#composing-the-hand) and [Anchor Interpolation](README.old.md#anchor-interpolation) is kept in [README.old.md](README.old.md) until it is rewritten for this fork.
 
 ## License
