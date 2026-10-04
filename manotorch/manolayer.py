@@ -43,7 +43,7 @@ CLOSE_FACES = [
 
 @dataclass
 class MANOOutput:
-    verts: torch.Tensor
+    verts: Optional[torch.Tensor]  # None with forward(..., joints_only=True)
     joints: torch.Tensor
     center_idx: Optional[int] = None
     center_joint: Optional[torch.Tensor] = None
@@ -192,23 +192,40 @@ class ManoLayer(torch.nn.Module):
         tsl = torch.cat([J[:, :1], torch.stack(lev_tsls, 2).flatten(1, 2)], 1)
         return rot, tsl
 
-    def skinning_layer(self, full_rots: torch.Tensor, betas: Optional[torch.Tensor]):
+    def skinning_layer(self, full_rots: torch.Tensor, betas: Optional[torch.Tensor], joints_only: bool = False):
         batch_size = full_rots.shape[0]
-
-        # ============== Shape Blend Shape and joints >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         _betas = self.th_betas if betas is None else betas
-        v_shaped = self._shaped_template(_betas)  # (?, 778, 3), ? = 1, or B
-        # $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
-        J = (self.th_J_regressor @ v_shaped).expand(batch_size, -1, -1)  # (B, 16, 3)
-
-        # ============== Pose Blend Shape >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        # $ B_P = \sum_{n=1}^{9K} (R_n (\arrow{\theta}) -  R_n (\arrow{\theta}^{*})) * \mathbf{P}_n $  #Eq.3 in MANO
         eye = torch.eye(3, dtype=full_rots.dtype, device=full_rots.device)
         pose_feature = (full_rots[:, 1:] - eye).reshape(batch_size, -1)  # (B, 15 x 9)
-        posedirs = self.th_posedirs  # (778, 3, 135)
-        B_P = (pose_feature @ posedirs.view(-1, posedirs.shape[-1]).T).view(batch_size, *posedirs.shape[:2])
-        # $ T_P =\bar{\mathbf{T}} + B_S + B_P $ # Eq.2 in MANO
-        T_P = v_shaped + B_P  # (B, 778, 3)
+
+        if joints_only:
+            # Only the 16 joints and the 5 fingertip vertices are needed. J(beta) is affine in beta, so it is
+            # computed from the joint-regressed template and shape blend shapes instead of all 778 vertices.
+            # They are derived on every call: callers may edit the th_* buffers after construction.
+            tip_ids = self._tip_vert_ids
+            n_betas = _betas.shape[-1]
+            J_regressor, shapedirs, v_template = self.th_J_regressor, self.th_shapedirs, self.th_v_template
+            J_shapedirs = (J_regressor @ shapedirs.reshape(shapedirs.shape[0], -1)).view(-1, n_betas)  # (16 x 3, 10)
+            J = ((J_regressor @ v_template).view(1, -1) + _betas @ J_shapedirs.T).view(-1, 16, 3)
+            J = J.expand(batch_size, -1, -1)  # (B, 16, 3)
+            tip_shapedirs = shapedirs.index_select(0, tip_ids).view(-1, n_betas)  # (5 x 3, 10)
+            tip_posedirs = self.th_posedirs.index_select(0, tip_ids).view(-1, pose_feature.shape[-1])  # (5 x 3, 135)
+            tip_shaped = v_template.index_select(1, tip_ids).view(1, -1) + _betas @ tip_shapedirs.T  # (?, 5 x 3)
+            T_P = (tip_shaped + pose_feature @ tip_posedirs.T).view(batch_size, -1, 3)  # (B, 5, 3)
+            weights = self.th_weights.index_select(0, tip_ids)  # (5, 16)
+        else:
+            # ============== Shape Blend Shape and joints >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            v_shaped = self._shaped_template(_betas)  # (?, 778, 3), ? = 1, or B
+            # $ \mathcal{J}(\bar{\mathbf{T}} + B_S)$ # Eq.10 in SMPL
+            J = (self.th_J_regressor @ v_shaped).expand(batch_size, -1, -1)  # (B, 16, 3)
+
+            # ============== Pose Blend Shape >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            # $ B_P = \sum_{n=1}^{9K} (R_n (\arrow{\theta}) -  R_n (\arrow{\theta}^{*})) * \mathbf{P}_n $  #Eq.3 in MANO
+            posedirs = self.th_posedirs  # (778, 3, 135)
+            B_P = (pose_feature @ posedirs.view(-1, posedirs.shape[-1]).T).view(batch_size, *posedirs.shape[:2])
+            # $ T_P =\bar{\mathbf{T}} + B_S + B_P $ # Eq.2 in MANO
+            T_P = v_shaped + B_P  # (B, 778, 3)
+            weights = self.th_weights  # (778, 16)
 
         # ============== Global transforms $ G_k $ and $ G^{\prime}_k = G_k [I, -J_k] $ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         rot, tsl = self._forward_kinematics(full_rots, J)  # (B, 16, 3, 3), (B, 16, 3)
@@ -216,12 +233,12 @@ class ManoLayer(torch.nn.Module):
 
         # ============== Linear blend skinning, Eq. 7 in SMPL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         G_prime = torch.cat([rot, tsl_prime.unsqueeze(-1)], -1).view(batch_size, 16, 12)
-        T = (self.th_weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, 778, 3, 4)
-        verts = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, 778, 3)
+        T = (weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, V, 3, 4)
+        skinned = torch.einsum("bvij,bvj->bvi", T[..., :3], T_P) + T[..., 3]  # (B, V, 3)
 
         # In addition to MANO reference joints we sample vertices on each finger to serve as finger tips,
         # then reorder joints to match SNAP definition
-        tips = verts.index_select(1, self._tip_vert_ids)
+        tips = skinned if joints_only else skinned.index_select(1, self._tip_vert_ids)
         joints = torch.cat([tsl, tips], 1).index_select(1, self._joints_reorder)  # (B, 21, 3)
 
         if self.center_idx is not None:
@@ -231,7 +248,7 @@ class ManoLayer(torch.nn.Module):
 
         # apply center shift on verts, joints and global transforms
         joints = joints - center_joint
-        verts = verts - center_joint
+        verts = None if joints_only else skinned - center_joint
         tsl = tsl - center_joint
         homo_row = self._homo_row.to(rot.dtype).expand(batch_size, 16, 1, 4)
         transforms_abs = torch.cat([torch.cat([rot, tsl.unsqueeze(-1)], -1), homo_row], -2)  # (B, 16, 4, 4)
@@ -244,13 +261,26 @@ class ManoLayer(torch.nn.Module):
             "betas": _betas,
         }
 
-    def forward(self, pose_coeffs: torch.Tensor, betas: Optional[torch.Tensor] = None, **kwargs) -> MANOOutput:
+    def forward(
+        self,
+        pose_coeffs: torch.Tensor,
+        betas: Optional[torch.Tensor] = None,
+        joints_only: bool = False,
+        **kwargs,
+    ) -> MANOOutput:
+        """
+        Args:
+            pose_coeffs: (B, 3 + 45), (B, 3 + ncomps) with use_pca, or (B, 16 x 4) quaternions with rot_mode="quat".
+            betas: (B, 10), or (1, 10) to share one shape across the batch; None for the mean shape.
+            joints_only: skip the 778 vertices (verts is None) and skin only the 5 fingertip vertices. The joints
+                and transforms equal those of the full forward up to float rounding.
+        """
         if self.rot_mode == "axisang":
             rot_blob = self.rotation_by_axisang(pose_coeffs)
         else:
             rot_blob = self.rotation_by_quaternion(pose_coeffs)
 
-        skinning_blob = self.skinning_layer(rot_blob["full_rots"], betas)
+        skinning_blob = self.skinning_layer(rot_blob["full_rots"], betas, joints_only=joints_only)
         return MANOOutput(
             verts=skinning_blob["verts"],
             joints=skinning_blob["joints"],

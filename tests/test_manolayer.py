@@ -180,3 +180,31 @@ def test_fingertips_match_smplx(mano_root, side):
     smplx_tips = {"thumb": 744, "index": 320, "middle": 443, "ring": 554, "pinky": 671}
     out = ManoLayer(side=side, mano_assets_root=mano_root)(torch.randn(4, 48) * 0.5)
     torch.testing.assert_close(out.joints[:, [4, 8, 12, 16, 20]], out.verts[:, list(smplx_tips.values())])
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+@pytest.mark.parametrize("cfg", CONFIGS, ids=lambda c: ",".join(f"{k}={v}" for k, v in c.items()) or "default")
+def test_joints_only_matches_full_forward(mano_root, side, cfg):
+    layer = ManoLayer(side=side, mano_assets_root=mano_root, **cfg).double()
+    pose, betas = make_inputs(layer, 8, torch.Generator().manual_seed(1))
+    for b in (betas, betas[:1], None):  # per-frame, shared and mean shape
+        full, fast = layer(pose, b), layer(pose, b, joints_only=True)
+        assert fast.verts is None
+        torch.testing.assert_close(fast.joints, full.joints, atol=1e-12, rtol=0)
+        torch.testing.assert_close(fast.transforms_abs, full.transforms_abs, atol=1e-12, rtol=0)
+        torch.testing.assert_close(fast.center_joint, full.center_joint, atol=1e-12, rtol=0)
+
+
+def test_joints_only_follows_edited_buffers(mano_root):
+    # downstream code corrects the left shapedirs in place after construction
+    layer = ManoLayer(side="left", mano_assets_root=mano_root).double()
+    layer.th_shapedirs[:, 0, :] *= -1
+    pose, betas = torch.randn(4, 48, dtype=torch.float64) * 0.5, torch.randn(4, 10, dtype=torch.float64)
+    torch.testing.assert_close(layer(pose, betas, joints_only=True).joints, layer(pose, betas).joints, atol=1e-12, rtol=0)
+
+
+def test_joints_only_gradients(mano_root):
+    layer = ManoLayer(mano_assets_root=mano_root, use_pca=True, flat_hand_mean=False, ncomps=45).double()
+    pose = (torch.randn(2, 48, dtype=torch.float64) * 0.5).requires_grad_(True)
+    betas = torch.randn(2, 10, dtype=torch.float64).requires_grad_(True)
+    torch.autograd.gradcheck(lambda p, b: layer(p, b, joints_only=True).joints, (pose, betas))
