@@ -8,8 +8,8 @@ version = "0.0.3"
 description = "A differentiable PyTorch layer for the MANO hand model"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "GPL-3.0-only"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Lixin Yang", email = "siriusyang@sjtu.edu.cn" }]
 maintainers = [{ name = "Jikai Wang", email = "jikai.wang@utdallas.edu" }]
 classifiers = [

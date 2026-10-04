@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://docs.python.org/3.12)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.11.0-EE4C2C.svg)](https://pytorch.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.6-76B900.svg)](https://developer.nvidia.com/cuda-12-6-0-download-archive)
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 > [!NOTE]
 > This repository is an optimized fork of [lixiny/manotorch](https://github.com/lixiny/manotorch), maintained by [IRVLUTD](https://github.com/IRVLUTD) for MANO hand research.
@@ -136,14 +136,14 @@ Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatom
 
 ## License
 
-- The manotorch code is licensed under the [GNU General Public License v3.0](LICENSE), inherited from upstream [manotorch](https://github.com/lixiny/manotorch) and [manopth](https://github.com/hassony2/manopth). Redistributed or modified versions must remain under GPL-3.0.
-- This repository no longer contains any file of the official MANO release (the `mano/webuser` code bundled by upstream was removed).
-- The MANO model files (`MANO_*.pkl`, and the `.npz` files converted from them) are subject to the MANO license and are not distributed with this repository.
-- Third-party code included in manotorch keeps its original notice: [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py) is adapted from [PyTorch3D](https://github.com/facebookresearch/pytorch3d) (BSD 3-Clause).
+- The manotorch code is licensed under the [Apache License 2.0](LICENSE), following upstream [manotorch](https://github.com/lixiny/manotorch), which adopted it in commit `a2a70c5` (2026-02-03). manotorch was originally modified from [manopth](https://github.com/hassony2/manopth) (GPL-3.0).
+- [NOTICE](NOTICE) lists the attributions that must accompany redistributions: the manotorch and manopth origin, the PyTorch3D code in [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py) (BSD 3-Clause, license text in the file header), and the MANO license.
+- The MANO model files (`MANO_*.pkl`, and the `.npz` files converted from them) are subject to the [MANO license](https://mano.is.tue.mpg.de/license) (non-commercial research use only) and are not distributed with this repository. The Apache License of this code does not extend to them.
+- This repository contains no file of the official MANO release (the `mano/webuser` code bundled by upstream was removed).
 
 ## Acknowledgements
 
-This fork builds on [manotorch](https://github.com/lixiny/manotorch) by Lixin Yang and contributors, which in turn is modified from [manopth](https://github.com/hassony2/manopth) by Yana Hasson. We thank the authors of [MANO](https://mano.is.tue.mpg.de/), [PyTorch3D](https://github.com/facebookresearch/pytorch3d), [Ceres Solver](https://github.com/ceres-solver/ceres-solver) and [pytorch_HMR](https://github.com/MandyMo/pytorch_HMR).
+This fork builds on [manotorch](https://github.com/lixiny/manotorch) by Lixin Yang and contributors, which in turn is modified from [manopth](https://github.com/hassony2/manopth) by Yana Hasson. We thank the authors of [MANO](https://mano.is.tue.mpg.de/) and [PyTorch3D](https://github.com/facebookresearch/pytorch3d).
 
 ## Citation
 

@@ -1,10 +1,15 @@
 # Changelog
 
 This repository is a modified version of [lixiny/manotorch](https://github.com/lixiny/manotorch), forked by [IRVLUTD](https://github.com/IRVLUTD) from upstream commit `2f6a701` (2025-07-16).
-As required by Section 5(a) of the [GNU GPL v3](LICENSE), this file lists the modifications made in this fork and their dates.
+As required by Section 4(b) of the [Apache License 2.0](LICENSE), this file lists the modifications made in this fork and their dates.
 The full history is available in the git log.
 
 ## [Unreleased]
+
+### License (2026-10-03)
+
+- The fork now follows upstream's license: upstream relicensed manotorch from GPL-3.0 to the Apache License 2.0 in commit `a2a70c5` (2026-02-03), which is merged here. Versions of this fork published before this change remain available under GPL-3.0.
+- Added `NOTICE` with the required attributions (manotorch and manopth origin, PyTorch3D's BSD 3-Clause code, the MANO license), shipped with the package; `pyproject.toml` declares `license = "Apache-2.0"`.
 
 ### 2026-10-03
 
