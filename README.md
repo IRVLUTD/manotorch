@@ -150,13 +150,13 @@ Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatom
 ## License
 
 - The manotorch code is licensed under the [Apache License 2.0](LICENSE), following upstream [manotorch](https://github.com/lixiny/manotorch), which adopted it in commit `a2a70c5` (2026-02-03). manotorch was originally modified from [manopth](https://github.com/hassony2/manopth) (GPL-3.0).
-- [NOTICE](NOTICE) lists the attributions that must accompany redistributions: the manotorch and manopth origin, the PyTorch3D code in [`manotorch/utils/geometry.py`](manotorch/utils/geometry.py) (BSD 3-Clause, license text in the file header), and the MANO license.
+- [NOTICE](NOTICE) lists the attributions that must accompany redistributions: the manotorch and manopth origin, the sources of the wrist faces and fingertip ids, and the MANO license.
 - The MANO model files (`MANO_*.pkl`, and the `.npz` files converted from them) are subject to the [MANO license](https://mano.is.tue.mpg.de/license) (non-commercial research use only) and are not distributed with this repository. The Apache License of this code does not extend to them.
 - This repository contains no file of the official MANO release (the `mano/webuser` code bundled by upstream was removed).
 
 ## Acknowledgements
 
-This fork builds on [manotorch](https://github.com/lixiny/manotorch) by Lixin Yang and contributors, which in turn is modified from [manopth](https://github.com/hassony2/manopth) by Yana Hasson. We thank the authors of [MANO](https://mano.is.tue.mpg.de/) and [PyTorch3D](https://github.com/facebookresearch/pytorch3d).
+This fork builds on [manotorch](https://github.com/lixiny/manotorch) by Lixin Yang and contributors, which in turn is modified from [manopth](https://github.com/hassony2/manopth) by Yana Hasson. We thank the authors of [MANO](https://mano.is.tue.mpg.de/).
 
 ## Citation
 

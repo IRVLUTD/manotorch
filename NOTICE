@@ -12,10 +12,6 @@ distributed under the GNU General Public License v3.0.
 Third-party code and data
 -------------------------
 
-- manotorch/utils/geometry.py is adapted from PyTorch3D (https://github.com/facebookresearch/pytorch3d),
-  Copyright (c) Meta Platforms, Inc. and affiliates, licensed under the BSD 3-Clause License. The license
-  text is reproduced in the header of that file.
-
 - The faces that close the wrist of the hand mesh (CLOSE_FACES in manotorch/manolayer.py) come from
   handobjectconsist (https://github.com/hassony2/handobjectconsist).
 

@@ -6,6 +6,12 @@ The full history is available in the git log.
 
 ## [Unreleased]
 
+### Rotation conversions rewritten (2026-10-04)
+
+- `manotorch/utils/geometry.py` is a new, independent implementation written from the textbook formulas (Rodrigues' formula, quaternion-matrix identities, Shepperd's method, closed-form Euler angle extraction); it contains no PyTorch3D code any more, so the PyTorch3D BSD notice was removed from the file header, `NOTICE` and the README. Function names and signatures are unchanged.
+- Results equal the previous implementation to 1e-15 in float64 (4e-13 for Euler angles near gimbal lock); `ManoLayer` outputs therefore differ from the previous commit only by float32 rounding. Behavior changes: `matrix_to_quaternion` returns the representative with `w >= 0` (the previous one returned either sign); `quaternion_to_axis_angle` accepts non-unit quaternions (the previous one scaled the angle by `|q|`) and returns angles in `[0, pi]`; `matrix_to_euler_angles` clamps the `asin`/`acos` argument, so matrices off by rounding at gimbal lock no longer give NaN.
+- Speed (RTX 4090; CPU single-threaded): on CUDA `axis_angle_to_matrix` uses 18 kernels instead of 53 (2.0-2.7x faster) and `quaternion_to_matrix` 17 instead of 44 (2.1x); a small-batch `ManoLayer` forward is 1.29x faster (forward + backward 1.26x), large batches unchanged. On the CPU `ManoLayer` is unchanged (within 2 %), `matrix_to_quaternion` and `rotation_to_axis_angle` are 1.2-1.8x faster. Slower: `quaternion_to_axis_angle` on CUDA (12 kernels instead of 6, +0.06 ms; it now handles non-unit and negative-`w` quaternions), and on the CPU with 16k rotations `quaternion_to_matrix` (0.59x) and `axis_angle_to_matrix` (0.83x).
+
 ### Translation input and on-device closed faces (2026-10-04)
 
 - `ManoLayer.forward(pose, betas, transl)` (upstream issue #19): a `(B, 3)` or `(1, 3)` translation in meters, added to `verts`, `joints` and `transforms_abs` after the `center_idx` centering, so the center joint lands at `transl`. With `center_idx=None` this matches manopth's `th_trans` (checked: 1.2e-7 m, float32 rounding); unlike manopth, a translation does not disable the centering. `joints_only` is now keyword-only.
