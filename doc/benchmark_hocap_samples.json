@@ -1,0 +1,151 @@
+{
+  "source": "/home/jikaiwang/Projects/UTD/UHAS/UHAS_HumanData/data/hand_poses/hocap/subject_1_20231025_165502.npz",
+  "sha256": "c0cc3b19fd695d1fa9ed59b33ba0846e40d415457f9ab60babdf790a8d3cfcb5",
+  "seed": 20261005,
+  "selection": [
+    {
+      "side": "left",
+      "array_indices": [
+        629,
+        244,
+        597,
+        595,
+        397,
+        420,
+        422,
+        364,
+        204,
+        338,
+        363,
+        556,
+        261,
+        107,
+        353,
+        89,
+        439,
+        223,
+        1,
+        562,
+        355,
+        154,
+        336,
+        334,
+        110,
+        150,
+        620,
+        145,
+        296,
+        480,
+        230,
+        231
+      ],
+      "frame_indices": [
+        629,
+        244,
+        597,
+        595,
+        397,
+        420,
+        422,
+        364,
+        204,
+        338,
+        363,
+        556,
+        261,
+        107,
+        353,
+        89,
+        439,
+        223,
+        1,
+        562,
+        355,
+        154,
+        336,
+        334,
+        110,
+        150,
+        620,
+        145,
+        296,
+        480,
+        230,
+        231
+      ]
+    }
+  ],
+  "metadata": {
+    "dataset": "hocap",
+    "sequence_id": "subject_1/20231025_165502",
+    "world_frame": "HO-Cap world frame (AprilTag tag_1)",
+    "fps": 30.0,
+    "units": "metres",
+    "rotation": "axis-angle",
+    "hands": [
+      "left",
+      "right"
+    ],
+    "mano": {
+      "model": "mano_v1_2 (MANO_LEFT for left, MANO_RIGHT for right)",
+      "layer": "manotorch ManoLayer(use_pca=False, flat_hand_mean=True, center_idx=None)",
+      "reproduce": "verts, joints = layer(concat(global_orient, hand_pose), betas); add transl",
+      "hand_pose_includes_hands_mean": true,
+      "left_shapedirs_x_negated": false
+    },
+    "joints": {
+      "names": [
+        "wrist",
+        "thumb1",
+        "thumb2",
+        "thumb3",
+        "thumb_tip",
+        "index1",
+        "index2",
+        "index3",
+        "index_tip",
+        "middle1",
+        "middle2",
+        "middle3",
+        "middle_tip",
+        "ring1",
+        "ring2",
+        "ring3",
+        "ring_tip",
+        "pinky1",
+        "pinky2",
+        "pinky3",
+        "pinky_tip"
+      ],
+      "fingertip_vertices": [
+        353,
+        467,
+        695,
+        576,
+        766
+      ],
+      "fingertip_slots": [
+        8,
+        12,
+        20,
+        16,
+        4
+      ],
+      "shape": "real (the dataset's betas), not zero"
+    },
+    "verification": {
+      "against": "the dataset's own MANO pipeline (tools/gt_layers)",
+      "left": {
+        "valid_frames": 676,
+        "max_err_mm": 7e-05
+      },
+      "right": {
+        "valid_frames": 0
+      }
+    },
+    "notes": [],
+    "exported": "2026-10-02"
+  },
+  "fitting_joints": "16 MANO joints; exclude all five tips",
+  "targets": "unchanged exported joints"
+}

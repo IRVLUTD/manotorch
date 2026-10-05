@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "manotorch"
+version = "0.1.0"
+description = "A differentiable PyTorch layer for the MANO hand model"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Lixin Yang", email = "siriusyang@sjtu.edu.cn" }]
+maintainers = [{ name = "Jikai Wang", email = "jikai.wang@utdallas.edu" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy",
+    "torch>=2.0.1",
+]
+
+[project.optional-dependencies]
+vis = ["imageio", "pyvista", "trimesh", "tqdm"]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/IRVLUTD/manotorch"
+Upstream = "https://github.com/lixiny/manotorch"
+
+[tool.setuptools.packages.find]
+include = ["manotorch*"]
+
+[tool.setuptools.package-data]
+manotorch = ["assets/anchor/*"]
+
+[tool.uv]
+# Pins the development environment only; the published package requires torch>=2.0.1.
+constraint-dependencies = ["torch==2.11.0"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["data", "thirdparty"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "C4", "SIM", "EXE", "W605",
+          "RUF010", "RUF100", "PLR0402", "S102", "BLE001"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/test_compatibility.ipynb" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

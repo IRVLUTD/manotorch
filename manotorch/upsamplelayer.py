@@ -29,11 +29,11 @@ class UpSampleLayer(Module):
             new_faces.append(np.array([c, z, y]))
 
         new_faces = np.vstack(new_faces)
-        new_vertices_idx = np.vstack([np.array(list(k)) for k in edges.keys()])
+        new_vertices_idx = np.vstack([np.array(list(k)) for k in edges])
         return new_vertices_idx, new_faces
 
     def forward(self, vertices, faces):
-        """
+        r"""
             *
            / \
           /   \

@@ -1,109 +1,114 @@
+"""Correct an anatomically implausible hand pose with the anatomy loss.
+
+    uv run python scripts/simple_anatomy_loss.py                                # live window
+    uv run python scripts/simple_anatomy_loss.py --gif doc/pose_correction.gif  # GIF, rendered off-screen
+
+The index finger starts hyper-extended (negative bend at all three joints), twisted at its PIP joint and spread
+at its DIP joint, all of which the anatomy limits forbid. Optimizing the finger axis-angles under
+AnatomyConstraintLossEE brings every joint back into its range. The view looks along the bend axis; the arrows
+are the anatomy aligned axes of the index finger: red = back (twist), green = up (spread), blue = left (bend).
+The hand is rendered as an opaque, smooth-shaded surface.
+"""
+
+import argparse
 from math import pi
 
-import numpy as np
-import open3d as o3d
 import torch
 import tqdm
+from _common import AXIS_LEGEND, add_axes, add_hand, add_legend, compress_gif, get_device, new_plotter, open_gif
 
-from manotorch.axislayer import AxisAdaptiveLayer, AxisLayerFK
 from manotorch.anatomy_loss import AnatomyConstraintLossEE
-from manotorch.manolayer import ManoLayer, MANOOutput
-from manotorch.utils.visutils import VizContext, create_coord_system_can
+from manotorch.axislayer import AxisLayerFK
+from manotorch.manolayer import ManoLayer
+
+#  transform order of right hand
+#         15-14-13-\
+#                   \
+#    3-- 2 -- 1 -----0   < NOTE: demo on this finger
+#   6 -- 5 -- 4 ----/
+#   12 - 11 - 10 --/
+#    9-- 8 -- 7 --/
+INDEX_FINGER = [1, 2, 3]
 
 
-def main():
-    viz_ctx = VizContext(non_block=True)
-    viz_ctx.init()
-    geometry_to_viz = dict(
-        hand_mesh_init=None,
-        hand_mesh_curr=None,
-        axis=None,
-        coord_system_list=None,
-    )
+def main(args):
+    device = get_device()
+    print(f"Using device: {device}")
 
-    mano_layer = ManoLayer(rot_mode="axisang",
-                           center_idx=9,
-                           mano_assets_root="assets/mano",
-                           use_pca=False,
-                           side="right",
-                           flat_hand_mean=True)
-    hand_faces = mano_layer.th_faces  # (NF, 3)
+    mano_layer = ManoLayer(
+        rot_mode="axisang",
+        center_idx=9,
+        mano_assets_root=args.mano_assets_root,
+        use_pca=False,
+        side="right",
+        flat_hand_mean=True,
+    ).to(device)
+    axis_layer = AxisLayerFK(side="right", mano_assets_root=args.mano_assets_root).to(device)
+    anatomy_loss = AnatomyConstraintLossEE()
+    anatomy_loss.setup()
+    faces = mano_layer.get_mano_closed_faces().numpy()
 
-    axisFK = AxisLayerFK(side=mano_layer.side,mano_assets_root="assets/mano")
-    anatomyLoss = AnatomyConstraintLossEE()
-    anatomyLoss.setup()
+    # initial index finger, as (twist, spread, bend) per joint
+    composed_ee = torch.zeros((1, 16, 3), device=device)
+    composed_ee[:, 1] = torch.tensor([0, 0, -pi / 3])
+    composed_ee[:, 2] = torch.tensor([pi / 3, 0, -pi / 3])
+    composed_ee[:, 3] = torch.tensor([0, pi / 3, -pi / 3])
+    articulation = axis_layer.compose(composed_ee)[:, 1:].clone().requires_grad_(True)  # (1, 15, 3)
+    global_aa = torch.zeros((1, 1, 3), device=device)
 
-    # constructing the initial bending index fingers
-    global_aa = torch.zeros((1, 1, 3))
-    composed_ee = torch.zeros((1, 16, 3))
+    optimizer = torch.optim.Adam([articulation], lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.iters // 5, gamma=0.5)
 
-    #  transform order of right hand
-    #         15-14-13-\
-    #                   \
-    #    3-- 2 -- 1 -----0   < NOTE: demo on this finger
-    #   6 -- 5 -- 4 ----/
-    #   12 - 11 - 10 --/
-    #    9-- 8 -- 7 --/
-    composed_ee[:, 1] = torch.tensor([0, 0, -pi / 3]).unsqueeze(0)
-    composed_ee[:, 2] = torch.tensor([pi / 3, 0, -pi / 3]).unsqueeze(0)
-    composed_ee[:, 3] = torch.tensor([0, pi / 3, -pi / 3]).unsqueeze(0)
-    composed_aa = axisFK.compose(composed_ee)[:, 1:, :].clone()  # (B, 15, 3)
-    composed_aa.requires_grad_(True)
-    zero_shape = torch.zeros((1, 10))
+    def forward():
+        out = mano_layer(torch.cat([global_aa, articulation], dim=1).reshape(1, 48))
+        T_g_a, _, ee = axis_layer(out.transforms_abs)
+        return out.verts[0], T_g_a[0], ee
 
-    param = []
-    param.append({"params": [composed_aa]})
-    optimizer = torch.optim.Adam(param, lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
-    proc_bar = tqdm.tqdm(range(5000))
+    def draw(verts, T_g_a, it, loss):
+        add_hand(pl, verts.detach().cpu().numpy(), faces, "right", opacity=1.0, name="hand")
+        centers = T_g_a[INDEX_FINGER, :3, 3].detach().cpu().numpy()
+        axes = T_g_a[INDEX_FINGER, :3, :3].detach().cpu().numpy()  # columns: back, up, left
+        add_axes(pl, centers, axes, mag=0.025, name="axes")
+        add_legend(pl, [(f"iteration {it:4d}   anatomy loss {loss:.5f}", "black"), AXIS_LEGEND])
 
-    for i, _ in enumerate(proc_bar):
+    verts, T_g_a, ee_init = forward()
+    ee = ee_init
+    pl = new_plotter(off_screen=args.gif is not None, window_size=(768, 512))
+    draw(verts, T_g_a, 0, anatomy_loss(ee_init).item())
+    pl.camera_position = [(0.0, 0.0, 0.36), (0.0, 0.01, 0.0), (0.0, 1.0, 0.0)]
+    if args.gif is not None:
+        open_gif(pl, args.gif)
+        pl.write_frame()
+    else:
+        pl.show(interactive_update=True)
 
-        curr_pose = torch.cat([global_aa, composed_aa], dim=1).reshape(1, -1)
-        mano_output: MANOOutput = mano_layer(curr_pose, zero_shape)
-        hand_verts_curr = mano_output.verts
-
-        T_g_p = mano_output.transforms_abs  # (B, 16, 4, 4)
-        T_g_a, R, ee = axisFK(T_g_p)  # ee (B, 16, 3)
-
-        loss = anatomyLoss(ee)
-
-        proc_bar.set_description(f"ee loss: {loss.item():.5f}")
+    for it in (bar := tqdm.trange(1, args.iters + 1)):
+        optimizer.zero_grad()
+        verts, T_g_a, ee = forward()
+        loss = anatomy_loss(ee)
         loss.backward()
         optimizer.step()
         scheduler.step()
+        bar.set_description(f"anatomy loss: {loss.item():.5f}")
+        if it % args.draw_every == 0 or it == args.iters:
+            draw(verts, T_g_a, it, loss.item())
+            pl.write_frame() if args.gif is not None else pl.update()
 
-        # ===== draw hand curr >>>>>
-        if i % 10 == 0:
-            if geometry_to_viz["coord_system_list"] is not None:
-                viz_ctx.remove_geometry_list(geometry_to_viz["coord_system_list"])
-
-            coord_system_list = []
-            for i in range(T_g_a.shape[1]):
-                if i in [1, 2, 3]:  # NOTE: show axes of index finger.
-                    coord_system_list += create_coord_system_can(scale=0.7, transf=T_g_a[0, i].detach().cpu().numpy())
-            viz_ctx.add_geometry_list(coord_system_list)
-            geometry_to_viz["coord_system_list"] = coord_system_list
-
-        if geometry_to_viz.get('hand_mesh_curr', None) is None:
-            o3d_hand_mesh_curr = o3d.geometry.TriangleMesh()
-            o3d_hand_mesh_curr.triangles = o3d.utility.Vector3iVector(hand_faces.detach().cpu().numpy())
-            o3d_hand_mesh_curr.vertices = o3d.utility.Vector3dVector(hand_verts_curr[0].detach().cpu().numpy())
-            o3d_hand_mesh_curr.compute_vertex_normals()
-            o3d_hand_mesh_curr.compute_triangle_normals()
-            o3d_hand_mesh_curr.paint_uniform_color([0.9, 0.0, 0.0])
-            viz_ctx.add_geometry(o3d_hand_mesh_curr)
-            geometry_to_viz["hand_mesh_curr"] = o3d_hand_mesh_curr
-        else:
-            o3d_hand_mesh_curr = geometry_to_viz["hand_mesh_curr"]
-            o3d_hand_mesh_curr.vertices = o3d.utility.Vector3dVector(hand_verts_curr[0].detach().cpu().numpy())
-            o3d_hand_mesh_curr.compute_vertex_normals()
-            o3d_hand_mesh_curr.compute_triangle_normals()
-            viz_ctx.update_geometry(o3d_hand_mesh_curr)
-        # <<<<<
-
-        viz_ctx.step()
+    deg = lambda e: torch.rad2deg(e[0, INDEX_FINGER]).detach().cpu().numpy().round(1)  # noqa: E731
+    print(f"index finger (twist, spread, bend) in degrees, before:\n{deg(ee_init)}\nafter:\n{deg(ee)}")
+    if args.gif is not None:
+        pl.close()
+        compress_gif(args.gif)
+        print(f"saved {args.gif}")
+    else:
+        pl.show()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--gif", default=None, help="write the optimization as a GIF instead of opening a window")
+    parser.add_argument("--iters", type=int, default=1000)
+    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--draw-every", type=int, default=10, help="iterations between drawn frames")
+    parser.add_argument("--mano-assets-root", default="assets/mano")
+    main(parser.parse_args())

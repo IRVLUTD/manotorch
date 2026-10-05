@@ -1,66 +1,80 @@
-from math import pi
+"""Compose a right and a left hand from the same anatomy aligned Euler angles.
 
-import pyvista as pv
+    uv run python scripts/simple_compose.py                                  # interactive window
+    uv run python scripts/simple_compose.py --gif doc/simple_compose_new.gif # orbiting GIF, rendered off-screen
+
+The index finger is bent: its MCP joint (1) by pi/6 around the spread axis and pi/2 around the bend axis, its PIP
+and DIP joints (2, 3) by pi/2 around the bend axis. The angles follow one convention for both hands, so the two
+composed hands are mirror images; they are drawn a few centimeters apart. Arrows: red = back (twist), green = up
+(spread), blue = left (bend).
+"""
+
+import argparse
+import math
+
 import torch
-from trimesh import Trimesh
+from _common import add_axes, add_hand, add_legend, get_device, hand_offset, hands_legend, new_plotter, show_or_record
 
 from manotorch.axislayer import AxisLayerFK
-from manotorch.manolayer import ManoLayer, MANOOutput
+from manotorch.manolayer import ManoLayer
+
+#  transform order of right hand
+#         15-14-13-\
+#                   \
+# *   3-- 2 -- 1 -----0   < NOTE: demo on this finger
+#   6 -- 5 -- 4 ----/
+#   12 - 11 - 10 --/
+#    9-- 8 -- 7 --/
 
 
-def main():
-    mano_layer = ManoLayer(rot_mode="axisang",
-                           center_idx=9,
-                           mano_assets_root="assets/mano",
-                           use_pca=False,
-                           side="right",
-                           flat_hand_mean=True)
-    hand_faces = mano_layer.th_faces  # (NF, 3)
+def main(args):
+    device = get_device()
+    print(f"Using device: {device}")
 
-    axisFK = AxisLayerFK(side=mano_layer.side,mano_assets_root="assets/mano")
-    composed_ee = torch.zeros((1, 16, 3))
+    composed_ee = torch.zeros((1, 16, 3), device=device)  # (twist, spread, bend) per joint
+    composed_ee[:, 1] = torch.tensor([0, math.pi / 6, math.pi / 2])
+    composed_ee[:, 2] = torch.tensor([0, 0, math.pi / 2])
+    composed_ee[:, 3] = torch.tensor([0, 0, math.pi / 2])
 
-    #  transform order of right hand
-    #         15-14-13-\
-    #                   \
-    #*   3-- 2 -- 1 -----0   < NOTE: demo on this finger
-    #   6 -- 5 -- 4 ----/
-    #   12 - 11 - 10 --/
-    #    9-- 8 -- 7 --/
+    pl = new_plotter(off_screen=args.gif is not None)
+    poses = {}
+    for side in ["right", "left"]:
+        mano_layer = ManoLayer(
+            rot_mode="axisang",
+            side=side,
+            center_idx=0,
+            mano_assets_root=args.mano_assets_root,
+            flat_hand_mean=True,
+            use_pca=args.use_pca,
+            ncomps=45,
+        ).to(device)
+        axis_layer = AxisLayerFK(side=side, mano_assets_root=args.mano_assets_root).to(device)
 
-    # NOTE: the ID: 1 joints have been rotated by pi/6 around spread-axis, and pi/2 around bend-axis
-    composed_ee[:, 1] = torch.tensor([0, pi / 6, pi / 2]).unsqueeze(0)
+        pose = axis_layer.compose(composed_ee).reshape(1, 48)  # axis-angles, (1, 16 x 3)
+        if args.use_pca:  # express the articulation with the 45 PCA components
+            pose[:, 3:] = (pose[:, 3:] - mano_layer.th_hands_mean) @ torch.linalg.inv(mano_layer.th_selected_comps)
+        poses[side] = pose
 
-    # NOTE: now, the ID: 2, 3 joints have been rotated by pi/2 around bend-axis
-    composed_ee[:, 2] = torch.tensor([0, 0, pi / 2]).unsqueeze(0)
-    composed_ee[:, 3] = torch.tensor([0, 0, pi / 2]).unsqueeze(0)
+        mano_output = mano_layer(pose)
+        T_g_a, _, _ = axis_layer(mano_output.transforms_abs)
+        offset = hand_offset(side)
+        add_hand(pl, mano_output.verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
+        add_axes(pl, T_g_a[0, :, :3, 3].cpu().numpy() + offset, T_g_a[0, :, :3, :3].cpu().numpy())
 
-    composed_aa = axisFK.compose(composed_ee).clone()  # (B=1, 16, 3)
-    composed_aa = composed_aa.reshape(1, -1)  # (1, 16x3)
-    zero_shape = torch.zeros((1, 10))
+    # mirrored poses share their PCA coefficients; as axis-angles, the y and z components change sign
+    mirror = (
+        torch.ones(48, device=device) if args.use_pca else torch.tensor([1.0, -1.0, -1.0], device=device).repeat(16)
+    )
+    is_mirror = torch.allclose(poses["left"], poses["right"] * mirror, atol=1e-4)
+    print(f"Is the composed left hand the mirror of the right hand? {is_mirror}")
 
-    mano_output: MANOOutput = mano_layer(composed_aa, zero_shape)
-
-    T_g_p = mano_output.transforms_abs  # (B=1, 16, 4, 4)
-    T_g_a, R, ee = axisFK(T_g_p)
-    T_g_a = T_g_a.squeeze(0)
-    hand_verts = mano_output.verts.squeeze(0)  # (NV, 3)
-    hand_faces = mano_layer.th_faces  # (NF, 3)
-    mesh = pv.wrap(Trimesh(hand_verts, hand_faces))
-
-    pl = pv.Plotter(off_screen=False, polygon_smoothing=True)
-    pl.add_mesh(mesh, color=[0.9, 0, 0], name="mesh")
-    pl.set_background('white')
-    pl.add_camera_orientation_widget()
-    pl.show(interactive=True)
-
-    # ===== NOTE: common the above pl.show(), and uncommnet the following code to generate a gif >>>>>
-    # view_up = [-1, 0, 0]
-    # path = pl.generate_orbital_path(factor=2.0, n_points=36, viewup=view_up, shift=0.1)
-    # pl.open_gif("orbit.gif")
-    # pl.orbit_on_path(path, write_frames=True, step=0.05, viewup=view_up)
-    # pl.close()
+    add_legend(pl, hands_legend())
+    show_or_record(pl, args.gif)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--gif", default=None, help="write an orbiting GIF here instead of opening a window")
+    parser.add_argument("--no-pca", dest="use_pca", action="store_false", help="feed axis-angles instead of PCA")
+    parser.add_argument("--mano-assets-root", default="assets/mano")
+    main(parser.parse_args())

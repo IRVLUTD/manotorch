@@ -1,80 +1,98 @@
+"""Visualize the anatomy aligned axes (or the anchors) of a random right hand and its left counterpart.
+
+    uv run python scripts/simple_app.py                              # interactive window
+    uv run python scripts/simple_app.py --gif doc/axis_new.gif       # orbiting GIF, rendered off-screen
+    uv run python scripts/simple_app.py --mode anchor --gif doc/anchor.gif
+
+The random pose is drawn in the anatomy aligned angle space, so it stays natural: each finger curls by a random
+amount with coupled flexion of its three joints, the MCP joints spread a little, and nothing twists. Both hands
+are composed from the same angles, so the left hand is the mirror of the right one; they are drawn a few
+centimeters apart. Arrows: red = back (twist), green = up (spread), blue = left (bend).
+"""
+
 import argparse
 
-import numpy as np
 import pyvista as pv
 import torch
-from trimesh import Trimesh
+from _common import (
+    ANCHOR_COLOR,
+    add_axes,
+    add_hand,
+    add_legend,
+    get_device,
+    hand_offset,
+    hands_legend,
+    new_plotter,
+    show_or_record,
+)
 
 from manotorch.anchorlayer import AnchorLayer
 from manotorch.axislayer import AxisLayerFK
-from manotorch.manolayer import ManoLayer, MANOOutput
+from manotorch.manolayer import ManoLayer
+
+
+def random_natural_angles(seed: int) -> torch.Tensor:
+    """(1, 16, 3) anatomy aligned Euler angles (twist, spread, bend) of a natural random hand pose."""
+    generator = torch.Generator().manual_seed(seed)
+
+    def uniform(low, high):
+        return low + (high - low) * torch.rand(1, generator=generator).item()
+
+    ee = torch.zeros(1, 16, 3)
+    for finger in range(4):  # index, middle, pinky, ring: MCP, PIP and DIP at joints 1 + 3k, 2 + 3k, 3 + 3k
+        curl, mcp = uniform(0.0, 1.0), 1 + 3 * finger
+        ee[0, mcp] = torch.tensor([0.0, uniform(-8, 8), 60 * curl])
+        ee[0, mcp + 1, 2] = 80 * curl
+        ee[0, mcp + 2, 2] = 55 * curl
+    curl = uniform(0.0, 1.0)  # thumb: CMC, MCP and IP at joints 13, 14, 15
+    ee[0, 13] = torch.tensor([0.0, uniform(10, 40), 30 * curl])
+    ee[0, 14, 2] = 40 * curl
+    ee[0, 15, 2] = 50 * curl
+    return torch.deg2rad(ee)
 
 
 def main(args):
-    mano_layer = ManoLayer(
-        rot_mode="axisang",
-        use_pca=False,
-        side="right",
-        center_idx=None,
-        mano_assets_root="assets/mano",
-        flat_hand_mean=False,
-    )
-    axis_layer = AxisLayerFK(side=mano_layer.side, mano_assets_root="assets/mano")
-    anchor_layer = AnchorLayer(anchor_root="assets/anchor")
+    device = get_device()
+    print(f"Using device: {device}")
 
-    BS = 1
-    random_shape = torch.rand(BS, 10)
-    root_pose = torch.tensor([[0, np.pi / 2, 0]]).repeat(BS, 1)
-    finger_pose = torch.zeros(BS, 45)
-    hand_pose = torch.cat([root_pose, finger_pose], dim=1)
+    angles = random_natural_angles(args.seed).to(device)  # sampled on the CPU: the pose does not depend on the device
 
-    mano_results: MANOOutput = mano_layer(hand_pose, random_shape)
-    verts = mano_results.verts
-    faces = mano_layer.th_faces
-    V = verts[0].numpy()
-    F = faces.numpy()
-    tmesh = Trimesh(V, F)
-    mesh = pv.wrap(tmesh)
+    pl = new_plotter(off_screen=args.gif is not None)
+    for side in ["right", "left"]:
+        mano_layer = ManoLayer(
+            rot_mode="axisang",
+            side=side,
+            center_idx=0,
+            mano_assets_root=args.mano_assets_root,
+            flat_hand_mean=True,
+            use_pca=False,
+        ).to(device)
+        axis_layer = AxisLayerFK(side=side, mano_assets_root=args.mano_assets_root).to(device)
 
-    T_g_p = mano_results.transforms_abs  # (B, 16, 4, 4)
-    T_g_a, R, ee = axis_layer(T_g_p)  # ee (B, 16, 3)
+        hand_pose = axis_layer.compose(angles).reshape(1, 48)  # no global rotation
+        mano_results = mano_layer(hand_pose)
+        verts = mano_results.verts  # (B, 778, 3)
+        T_g_a, _, _ = axis_layer(mano_results.transforms_abs)  # (B, 16, 4, 4)
 
-    bul_axes_loc = torch.eye(3).reshape(1, 1, 3, 3).repeat(BS, 16, 1, 1).to(verts.device)
-    bul_axes_glb = torch.matmul(T_g_a[:, :, :3, :3], bul_axes_loc)  # (B, 16, 3, 3)
+        offset = hand_offset(side)
+        add_hand(pl, verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
+        if args.mode == "axis":
+            centers = T_g_a[0, :, :3, 3].cpu().numpy() + offset  # (16, 3)
+            add_axes(pl, centers, T_g_a[0, :, :3, :3].cpu().numpy())  # columns: back, up, left
+        else:
+            anchors = AnchorLayer().to(device)(verts)[0].cpu().numpy() + offset  # (32, 3)
+            spheres = pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=1.8e-3), orient=False, scale=False)
+            pl.add_mesh(spheres, color=ANCHOR_COLOR)
 
-    b_axes_dir = bul_axes_glb[:, :, :, 0].numpy()  # back direction (B, 16, 3)
-    u_axes_dir = bul_axes_glb[:, :, :, 1].numpy()  # up direction (B, 16, 3)
-    l_axes_dir = bul_axes_glb[:, :, :, 2].numpy()  # left direction (B, 16, 3)
-
-    axes_cen = T_g_a[:, :, :3, 3].numpy()  # center (B, 16, 3)
-
-    pl = pv.Plotter(off_screen=False)
-    pl.add_mesh(mesh, opacity=0.4, name="mesh", smooth_shading=True)
-
-    if args.mode == "axis":
-        pl.add_arrows(axes_cen, b_axes_dir, color="red", mag=0.02)
-        pl.add_arrows(axes_cen, u_axes_dir, color="yellow", mag=0.02)
-        pl.add_arrows(axes_cen, l_axes_dir, color="blue", mag=0.02)
-    elif args.mode == "anchor":
-        anchors = anchor_layer(verts)[0].numpy()
-        n_achors = anchors.shape[0]
-        for i in range(n_achors):
-            pl.add_mesh(pv.Cube(center=anchors[i], x_length=3e-3, y_length=3e-3, z_length=3e-3),
-                        color="yellow",
-                        name=f"anchor{i}")
-
-    pl.set_background('white')
-    pl.add_camera_orientation_widget()
-    pl.show(interactive=True)
-
-    # ===== NOTE: common the above pl.show(), and uncommnet the following code to generate a gif >>>>>
-    # path = pl.generate_orbital_path(factor=2.0, n_points=36, shift=0.1)
-    # pl.open_gif("orbit.gif")
-    # pl.orbit_on_path(path, write_frames=True, step=0.05)
-    # pl.close()
+    lines = hands_legend()
+    add_legend(pl, lines if args.mode == "axis" else lines[:2] + [("anchors", ANCHOR_COLOR)])
+    show_or_record(pl, args.gif)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, choices=["axis", "anchor"], default="axis", help="visualize axis or anchor")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=["axis", "anchor"], default="axis", help="visualize the axes or the anchors")
+    parser.add_argument("--gif", default=None, help="write an orbiting GIF here instead of opening a window")
+    parser.add_argument("--seed", type=int, default=0, help="seed of the random hand pose")
+    parser.add_argument("--mano-assets-root", default="assets/mano")
     main(parser.parse_args())

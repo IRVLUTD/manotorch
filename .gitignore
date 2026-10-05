@@ -16,3 +16,6 @@ assets/mano_layer.svg
 manotorch.egg-info/
 thirdparty/
 data/
+assets/mano
+.venv/
+doc/review_report.md

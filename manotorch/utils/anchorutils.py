@@ -1,7 +1,8 @@
-import torch
-import numpy as np
 import os
 import pickle
+
+import numpy as np
+import torch
 
 
 def anchor_load_driver(inpath):
@@ -52,7 +53,7 @@ def recover_anchor_batch(vertices, idx, weights):
     # idx = TENSOR[1, 32, 3]
     # weights = TENSOR[1, 32, 2]
     batch_size = vertices.shape[0]
-    batch_idx = torch.arange(batch_size)[:, None, None]  # TENSOR[NBATCH, 1, 1]
+    batch_idx = torch.arange(batch_size, device=vertices.device)[:, None, None]  # TENSOR[NBATCH, 1, 1]
     indexed_vertices = vertices[batch_idx, idx, :]  # TENSOR[NBATCH, 32, 3, 3]
     base_vec_1 = indexed_vertices[:, :, 1, :] - indexed_vertices[:, :, 0, :]  # TENSOR[NBATCH, 32, 3]
     base_vec_2 = indexed_vertices[:, :, 2, :] - indexed_vertices[:, :, 0, :]  # TENSOR[NBATCH, 32, 3]
@@ -127,17 +128,3 @@ def masking_load_driver(anchor_path, palm_vert_idx_path):
     hand_palm_vert_mask = get_mask_from_index(hand_palm_vert_idx, n_vert)
     return vertex_assignment_merged, hand_palm_vert_mask
 
-
-def test():
-    res = anchor_load_driver("./assets/anchor")
-    for x in res:
-        try:
-            print(x.shape)
-        except AttributeError:
-            print(x)
-    print(get_rev_anchor_mapping(res[3]))
-
-
-# testing
-if __name__ == "__main__":
-    test()

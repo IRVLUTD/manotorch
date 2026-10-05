@@ -1,0 +1,29 @@
+manotorch (IRVLUTD fork)
+
+This product is a fork of manotorch (https://github.com/lixiny/manotorch) by Lixin Yang and the manotorch
+contributors, licensed under the Apache License, Version 2.0 since upstream commit a2a70c5 (2026-02-03).
+The fork is maintained by IRVLUTD (https://github.com/IRVLUTD/manotorch); its modifications are listed in
+CHANGELOG.md and in the git history.
+
+manotorch was originally modified from manopth (https://github.com/hassony2/manopth) by Yana Hasson,
+distributed under the GNU General Public License v3.0.
+
+
+Third-party code and data
+-------------------------
+
+- The faces that close the wrist of the hand mesh (CLOSE_FACES in manotorch/manolayer.py) come from
+  handobjectconsist (https://github.com/hassony2/handobjectconsist).
+
+- The fingertip vertex indices (TIP_VERT_IDS in manotorch/manolayer.py) follow smplx
+  (https://github.com/vchoutas/smplx).
+
+
+MANO model
+----------
+
+This software requires the MANO hand model files, which are not distributed with it. The MANO model, and
+any file converted from it (such as MANO_LEFT.npz and MANO_RIGHT.npz), is subject to the MANO license
+(https://mano.is.tue.mpg.de/license), which permits non-commercial scientific research use only. Commercial
+use of the model requires a separate license; see the MANO license page. The Apache License of this software
+does not extend to the MANO model.
