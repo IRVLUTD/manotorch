@@ -306,3 +306,14 @@ Error Correction GIF 已按用户要求改为不透明 solid surface，重新渲
 - 已被下载的副本及 GitHub 对旧提交的缓存无法保证回收。本地保留撤回前的 bundle、报告和 CI 日志以便审计；这些备份未发布。
 
 重新发布的最终状态与安装文件见上方 GitHub Release；最终 CI 与验收记录同步至 Notion。
+
+## 撤回重提后的最终验收
+
+- `v0.1.0` 已重新正式发布，指向 master `4202b050e025dddf659475279e7ed37c46d746e0`，实现提交为 `29be6d2`。
+- [旧发布撤回](https://github.com/IRVLUTD/manotorch/actions/runs/37331037171)、[开发分支边界 CI](https://github.com/IRVLUTD/manotorch/actions/runs/37331479822)、[master CI](https://github.com/IRVLUTD/manotorch/actions/runs/37331480232) 及 [新的 Release CI](https://github.com/IRVLUTD/manotorch/actions/runs/37331752588) 均成功。两个额外的临时撤回任务在旧 Release 已删除后得到 404，未改动重新发布的版本；临时分支已删除。
+- 实际下载 GitHub 自动生成的 tag 源码压缩包，确认不含本报告，且源码／文档的 CJK 检查通过。
+- 新 wheel／sdist 已下载，SHA256 与新的 GitHub digest 一致，包内实现与新 tag 的源码逐字节一致；均不含本报告。
+- 中文报告继续作为开发分支文档保留，本次追加仅修改开发报告；master 与 tag 均排除它。开发分支公开可见，不能将报告视为私密文件。
+- 当前工作分支为 optimize；运行时代码与第一次发布完全一致，未引入新的模型或性能修改。
+
+本地完整记录：`data/benchmarks/reissue_0.1.0.json`，下载包与自动源码包：`data/benchmarks/reissue_0.1.0_published/`。旧记录与备份保留在 data 中，均不进入 Git。
