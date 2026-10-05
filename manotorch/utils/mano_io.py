@@ -45,7 +45,16 @@ class _MANOUnpickler(pickle.Unpickler):
             return getattr(np, name)
         if module in ("builtins", "__builtin__") and name == "set":
             return set
+        if module == "_codecs" and name == "encode":
+            return _legacy_bytes
         raise pickle.UnpicklingError(f"refusing to load {module}.{name}: not part of a MANO pickle")
+
+
+def _legacy_bytes(value, encoding):
+    """Protocol-2 numpy pickles encode byte arrays this way; do not invoke arbitrary registered codecs."""
+    if not isinstance(value, str) or encoding not in ("latin1", "latin-1"):
+        raise pickle.UnpicklingError("only latin1 byte encoding is allowed in MANO pickles")
+    return value.encode("latin1")
 
 
 def _to_numpy(obj):
@@ -89,6 +98,7 @@ def load_mano_model(path: str) -> dict:
     Returns:
         dict: the model entries as dense `np.ndarray`s; string entries (`bs_style`, `bs_type`) as `str`.
     """
+    path = os.fspath(path)
     if path.endswith(".npz"):
         with np.load(path, allow_pickle=False) as data:
             arrays = {key: data[key] for key in data.files}
@@ -100,9 +110,15 @@ def load_mano_model(path: str) -> dict:
 
 
 def find_mano_model(mano_assets_root: str, side: str) -> str:
-    """Return the model file of `side` under `<mano_assets_root>/models/`, preferring `.npz` over `.pkl`."""
-    stem = os.path.join(mano_assets_root, "models", f"MANO_{side.upper()}")
-    for ext in (".npz", ".pkl"):
-        if os.path.isfile(stem + ext):
-            return stem + ext
-    raise FileNotFoundError(f"Can not find MANO assets {stem}.npz or {stem}.pkl, please follow steps in README.md")
+    """Find a model under root/models or a flat root, preferring NPZ in each folder.
+
+    The canonical folder takes precedence; *_new.pkl and *_np.pkl support legacy converted model collections.
+    """
+    if side not in ("left", "right", "LEFT", "RIGHT"):
+        raise ValueError(f"Unknown hand side {side!r}; expected left or right")
+    for folder in (os.path.join(mano_assets_root, "models"), os.fspath(mano_assets_root)):
+        stem = os.path.join(folder, f"MANO_{side.upper()}")
+        for ext in (".npz", ".pkl", "_new.pkl", "_np.pkl"):
+            if os.path.isfile(stem + ext):
+                return stem + ext
+    raise FileNotFoundError(f"Can not find MANO assets under {mano_assets_root}, please follow steps in README.md")

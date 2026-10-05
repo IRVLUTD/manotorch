@@ -37,6 +37,28 @@ def test_missing_model_raises(tmp_path):
         find_mano_model(str(tmp_path), "right")
 
 
+def test_protocol_two_numpy_and_bytes(tmp_path):
+    path = tmp_path / "legacy.pkl"
+    value = {"array": np.arange(12).reshape(3, 4), "raw": b"\xffMANO"}
+    path.write_bytes(pickle.dumps(value, protocol=2))
+    result = load_mano_pickle(path)
+    np.testing.assert_array_equal(result["array"], value["array"])
+    assert result["raw"] == value["raw"]
+
+
+def test_flat_and_legacy_model_discovery(tmp_path):
+    legacy = tmp_path / "MANO_RIGHT_np.pkl"
+    legacy.touch()
+    assert find_mano_model(tmp_path, "right") == str(legacy)
+    flat = tmp_path / "MANO_RIGHT.npz"
+    flat.touch()
+    assert find_mano_model(tmp_path, "right") == str(flat)
+    canonical = tmp_path / "models" / "MANO_RIGHT.pkl"
+    canonical.parent.mkdir()
+    canonical.touch()
+    assert find_mano_model(tmp_path, "right") == str(canonical)
+
+
 @requires_mano
 @pytest.mark.parametrize("side", ["RIGHT", "LEFT"])
 def test_model_entries(side):

@@ -953,7 +953,7 @@ wheels = [
 
 [[package]]
 name = "manotorch"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -982,8 +982,8 @@ requires-dist = [
     { name = "imageio", marker = "extra == 'vis'" },
     { name = "numpy" },
     { name = "pyvista", marker = "extra == 'vis'" },
-    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.0" },
-    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.0", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.0.1" },
+    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.0.1", index = "https://download.pytorch.org/whl/cu126" },
     { name = "tqdm", marker = "extra == 'vis'" },
     { name = "trimesh", marker = "extra == 'vis'" },
 ]

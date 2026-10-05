@@ -1,9 +1,9 @@
 import warnings
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import torch
+from torch._dynamo import is_compiling
 
 from .utils.geometry import axis_angle_to_matrix, quaternion_to_axis_angle, quaternion_to_matrix
 from .utils.mano_io import find_mano_model, load_mano_model
@@ -43,13 +43,13 @@ CLOSE_FACES = [
 
 @dataclass
 class MANOOutput:
-    verts: Optional[torch.Tensor]  # None with forward(..., joints_only=True)
+    verts: torch.Tensor | None  # None with forward(..., joints_only=True)
     joints: torch.Tensor
-    center_idx: Optional[int] = None
-    center_joint: Optional[torch.Tensor] = None
-    full_poses: Optional[torch.Tensor] = None
-    betas: Optional[torch.Tensor] = None
-    transforms_abs: Optional[torch.Tensor] = None
+    center_idx: int | None = None
+    center_joint: torch.Tensor | None = None
+    full_poses: torch.Tensor | None = None
+    betas: torch.Tensor | None = None
+    transforms_abs: torch.Tensor | None = None
 
 
 def _apply_transforms(T: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
@@ -66,10 +66,26 @@ class _SkinApply(torch.autograd.Function):
     temporaries. This saves only T and p, as autograd did, and its backward is itself differentiable.
     """
 
+    generate_vmap_rule = True
+
     @staticmethod
-    def forward(ctx, T, points):
-        ctx.save_for_backward(T, points)
+    def forward(T, points):
         return _apply_transforms(T, points)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(*inputs)
+        ctx.save_for_forward(*inputs)
+
+    @staticmethod
+    def jvp(ctx, tangent_T, tangent_points):
+        T, points = ctx.saved_tensors
+        out = _apply_transforms(tangent_T, points) if tangent_T is not None else torch.zeros_like(points)
+        if tangent_points is not None:
+            out = torch.addcmul(out, T[..., 0], tangent_points[..., 0:1])
+            out = torch.addcmul(out, T[..., 1], tangent_points[..., 1:2])
+            out = torch.addcmul(out, T[..., 2], tangent_points[..., 2:3])
+        return out
 
     @staticmethod
     def backward(ctx, grad):
@@ -96,10 +112,10 @@ class ManoLayer(torch.nn.Module):
         self,
         rot_mode: str = "axisang",
         side: str = "right",
-        center_idx: Optional[int] = None,
+        center_idx: int | None = None,
         mano_assets_root: str = "assets/mano",
         use_pca: bool = False,
-        flat_hand_mean: bool = True,  # Only used in pca mode
+        flat_hand_mean: bool = True,  # Articulation mean in axis-angle mode
         ncomps: int = 15,  # Only used in pca mode
         fix_left_shapedirs: bool = False,
         **kargs,
@@ -135,7 +151,7 @@ class ManoLayer(torch.nn.Module):
         elif rot_mode == "quat":
             self.rot_dim = 4
             if use_pca or not flat_hand_mean:
-                warnings.warn("Quat mode doesn't support PCA pose or non flat_hand_mean !")
+                warnings.warn("Quat mode doesn't support PCA pose or non flat_hand_mean !", stacklevel=2)
         else:
             raise NotImplementedError(f"Unrecognized rotation mode, expect [pca|axisang|quat], got {rot_mode}")
 
@@ -177,6 +193,14 @@ class ManoLayer(torch.nn.Module):
         if side == "left":
             close_faces = close_faces[:, [2, 1, 0]]
         self.register_buffer("th_closed_faces", torch.cat([self.th_faces, close_faces]), persistent=False)
+        self.register_load_state_dict_post_hook(self._refresh_closed_faces)
+
+    @staticmethod
+    def _refresh_closed_faces(module, incompatible_keys):
+        close = module.th_faces.new_tensor(CLOSE_FACES)
+        if module.side == "left":
+            close = close.flip(-1)
+        module.th_closed_faces = torch.cat([module.th_faces, close])
 
     def rotation_by_axisang(self, pose_coeffs):
         hand_pose_coeffs = pose_coeffs[:, self.rot_dim :]
@@ -229,7 +253,7 @@ class ManoLayer(torch.nn.Module):
         tsl = torch.cat([J[:, :1], torch.stack(lev_tsls, 2).flatten(1, 2)], 1)
         return rot, tsl
 
-    def skinning_layer(self, full_rots: torch.Tensor, betas: Optional[torch.Tensor], joints_only: bool = False):
+    def skinning_layer(self, full_rots: torch.Tensor, betas: torch.Tensor | None, joints_only: bool = False):
         batch_size = full_rots.shape[0]
         _betas = self.th_betas if betas is None else betas
         eye = torch.eye(3, dtype=full_rots.dtype, device=full_rots.device)
@@ -271,7 +295,9 @@ class ManoLayer(torch.nn.Module):
         # ============== Linear blend skinning, Eq. 7 in SMPL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         G_prime = torch.cat([rot, tsl_prime.unsqueeze(-1)], -1).view(batch_size, 16, 12)
         T = (weights @ G_prime).view(batch_size, -1, 3, 4)  # (B, V, 3, 4)
-        skinned = _SkinApply.apply(T, T_P)  # (B, V, 3)
+        # Dynamo currently rejects autograd.Function classes with a custom jvp. Native ops are fused by Inductor;
+        # eager execution retains the memory-efficient custom backward and torch.func support.
+        skinned = _apply_transforms(T, T_P) if is_compiling() else _SkinApply.apply(T, T_P)  # (B, V, 3)
 
         # In addition to MANO reference joints we sample vertices on each finger to serve as finger tips,
         # then reorder joints to match SNAP definition
@@ -301,8 +327,8 @@ class ManoLayer(torch.nn.Module):
     def forward(
         self,
         pose_coeffs: torch.Tensor,
-        betas: Optional[torch.Tensor] = None,
-        transl: Optional[torch.Tensor] = None,
+        betas: torch.Tensor | None = None,
+        transl: torch.Tensor | None = None,
         *,
         joints_only: bool = False,
         **kwargs,
@@ -340,7 +366,7 @@ class ManoLayer(torch.nn.Module):
             transforms_abs=transforms_abs,
         )
 
-    def get_rotation_center(self, betas: Optional[torch.Tensor] = None):
+    def get_rotation_center(self, betas: torch.Tensor | None = None):
         """
 
         V = MANO(theta, beta)

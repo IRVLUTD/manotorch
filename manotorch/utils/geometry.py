@@ -5,8 +5,8 @@ Conventions:
 - axis-angles are (..., 3) vectors whose norm is the angle in radians;
 - Euler angles follow an intrinsic convention string such as "XYZ": R = R_X(a) @ R_Y(b) @ R_Z(c).
 
-Every function is batched over the leading dimensions, differentiable (including at the zero rotation) and free of
-host-device synchronization.
+Functions are batched and free of host-device synchronization. Axis-angle conversions have finite first- and
+second-order derivatives at zero. Euler inverses are not smooth at gimbal lock; there we choose the last angle zero.
 """
 
 import torch
@@ -34,27 +34,41 @@ def _axis_indices(convention: str):
     return tuple(_AXES[letter] for letter in convention)
 
 
+def _sinc_squared(squared: torch.Tensor) -> torch.Tensor:
+    """sinc(sqrt(squared) / pi), with a polynomial in squared near zero.
+
+    Evaluating sqrt(0) even in an unselected branch can poison double backward. The regular branch is clamped
+    before sqrt; the Taylor branch preserves derivatives of the analytic function at the identity.
+    """
+    # At squared < 1e-4, the omitted cubic term is at most 1e-12 / 5040 < float64 epsilon.
+    polynomial = 1 - squared * (1 / 6 - squared / 120)
+    regular = torch.sinc(squared.clamp_min(1e-4).sqrt() / torch.pi)
+    return torch.where(squared < 1e-4, polynomial, regular)
+
+
 def axis_angle_to_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
     """(..., 3) axis-angles to (..., 3, 3) rotation matrices.
 
     Rodrigues' formula with r = angle * axis: R = cos(t) I + sin(t)/t [r]x + (1 - cos(t))/t^2 r r^T, where both
     ratios are written with sinc so they stay exact and differentiable at t = 0.
     """
-    angle = torch.linalg.vector_norm(axis_angle, dim=-1, keepdim=True)  # (..., 1)
-    sin_ratio = torch.sinc(angle / torch.pi)  # sin(t) / t
-    half_sinc = torch.sinc(angle / (2 * torch.pi))  # sin(t/2) / (t/2)
+    squared = (axis_angle * axis_angle).sum(-1, keepdim=True)
+    # Evaluate both coefficients together: share the Taylor/clamp/sqrt/sinc/where launches in eager mode.
+    sin_ratio, half_sinc = _sinc_squared(torch.cat([squared, squared * 0.25], -1)).split(1, -1)
     cos_ratio = 0.5 * half_sinc * half_sinc  # (1 - cos(t)) / t^2
     # scale the (..., 3) vectors before forming the (..., 3, 3) terms: fewer large temporaries
     R = (cos_ratio * axis_angle).unsqueeze(-1) * axis_angle.unsqueeze(-2) + _skew(sin_ratio * axis_angle)
-    R.diagonal(dim1=-2, dim2=-1).add_(torch.cos(angle))
+    R.diagonal(dim1=-2, dim2=-1).add_(1 - squared * cos_ratio)
     return R
 
 
 def axis_angle_to_quaternion(axis_angle: torch.Tensor) -> torch.Tensor:
     """(..., 3) axis-angles to (..., 4) unit quaternions (cos(t/2), sin(t/2) axis), real part first."""
-    angle = torch.linalg.vector_norm(axis_angle, dim=-1, keepdim=True)
+    squared = (axis_angle * axis_angle).sum(-1, keepdim=True)
     # sin(t/2) * axis = sin(t/2)/t * r = 0.5 sinc(t / 2pi) * r
-    return torch.cat([torch.cos(0.5 * angle), 0.5 * torch.sinc(angle / (2 * torch.pi)) * axis_angle], dim=-1)
+    quarter_sinc, half_sinc = _sinc_squared(torch.cat([squared * 0.0625, squared * 0.25], -1)).split(1, -1)
+    real = 1 - squared * quarter_sinc.square() / 8
+    return torch.cat([real, 0.5 * half_sinc * axis_angle], dim=-1)
 
 
 def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
@@ -75,11 +89,15 @@ def quaternion_to_axis_angle(quaternions: torch.Tensor) -> torch.Tensor:
 
     The angle is in [0, pi]. With |v| = |q| sin(t/2): r = t v / |v| = v / (|q| * 0.5 * sinc(t / 2pi)).
     """
-    w, v = quaternions[..., :1], quaternions[..., 1:]
-    v_norm = torch.linalg.vector_norm(v, dim=-1, keepdim=True)
-    half_angle = torch.atan2(v_norm, w.abs())  # of the representative with w >= 0, in [0, pi/2]
-    # the sign flips v for w < 0; |q| = hypot(|v|, w)
-    scale = torch.copysign(torch.ones_like(w), w) / (0.5 * torch.hypot(v_norm, w) * torch.sinc(half_angle / torch.pi))
+    q = quaternions / torch.linalg.vector_norm(quaternions, dim=-1, keepdim=True)
+    w, v = q[..., :1], q[..., 1:]
+    squared = v.square().sum(-1, keepdim=True)
+    safe_norm = squared.clamp_min(1e-4).sqrt()
+    half_angle = torch.atan2(safe_norm, w.abs())
+    # For unit q, asin(|v|)/|v| = 1 + |v|^2/6 + 3|v|^4/40 + 5|v|^6/112 near zero.
+    polynomial = 2 + squared * (1 / 3 + squared * (3 / 20 + squared * (5 / 56)))
+    scale = torch.where(squared < 1e-4, polynomial, 2 * half_angle / safe_norm)
+    scale = scale * torch.copysign(torch.ones_like(w), w)
     return v * scale
 
 
@@ -155,13 +173,25 @@ def matrix_to_euler_angles(matrix: torch.Tensor, convention: str) -> torch.Tenso
     i, j, k = _axis_indices(convention)
     s = 1.0 if (j - i) % 3 == 1 else -1.0
     R = matrix
+    l_axis = 3 - i - j
+    tolerance = 4 * torch.finfo(matrix.dtype).eps
     if i != k:
-        b = torch.asin((s * R[..., i, k]).clamp(-1.0, 1.0))
-        a = torch.atan2(-s * R[..., j, k], R[..., k, k])
-        c = torch.atan2(-s * R[..., i, j], R[..., i, i])
+        magnitude2 = R[..., i, i].square() + R[..., i, j].square()
+        singular = magnitude2 <= tolerance**2
+        b = torch.atan2(s * R[..., i, k], magnitude2.clamp_min(tolerance**2).sqrt())
+        b = torch.where(singular, torch.copysign(torch.full_like(b, torch.pi / 2), s * R[..., i, k]), b)
+        ay, ax, cy, cx = -s * R[..., j, k], R[..., k, k], -s * R[..., i, j], R[..., i, i]
     else:
-        l_axis = 3 - i - j
-        b = torch.acos(R[..., i, i].clamp(-1.0, 1.0))
-        a = torch.atan2(R[..., j, i], -s * R[..., l_axis, i])
-        c = torch.atan2(R[..., i, j], s * R[..., i, l_axis])
+        magnitude2 = R[..., j, i].square() + R[..., l_axis, i].square()
+        singular = magnitude2 <= tolerance**2
+        b = torch.atan2(magnitude2.clamp_min(tolerance**2).sqrt(), R[..., i, i])
+        locked_b = torch.where(R[..., i, i] < 0, torch.full_like(b, torch.pi), torch.zeros_like(b))
+        b = torch.where(singular, locked_b, b)
+        ay, ax, cy, cx = R[..., j, i], -s * R[..., l_axis, i], R[..., i, j], s * R[..., i, l_axis]
+    # Safe arguments avoid atan2(0, 0) in the inactive branch during backward.
+    a = torch.atan2(torch.where(singular, 0.0, ay), torch.where(singular, 1.0, ax))
+    c = torch.atan2(torch.where(singular, 0.0, cy), torch.where(singular, 1.0, cx))
+    locked_a = torch.atan2(torch.where(singular, s * R[..., l_axis, j], 0.0),
+                           torch.where(singular, R[..., j, j], 1.0))
+    a = torch.where(singular, locked_a, a)
     return torch.stack([a, b, c], dim=-1)

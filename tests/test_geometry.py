@@ -1,6 +1,7 @@
 import itertools
 import math
 
+import numpy as np
 import pytest
 import torch
 
@@ -25,7 +26,15 @@ def test_axis_angle_to_matrix_matches_matrix_exponential():
     aa = random_axis_angles(500, torch.Generator().manual_seed(0))
     aa = torch.cat([aa, torch.zeros(1, 3, dtype=D), torch.tensor([[1e-9, 0, 0], [0, 0, math.pi]], dtype=D)])
     R = g.axis_angle_to_matrix(aa)
-    torch.testing.assert_close(R, torch.linalg.matrix_exp(skew_reference(aa)), atol=1e-12, rtol=0)
+    # PyTorch 2.0's batched matrix_exp has ~4e-11 absolute error on this sample. Check the conversion itself
+    # against independent numpy Rodrigues at 1e-12, then check matrix_exp at its observed accuracy.
+    values = aa.numpy()
+    theta = np.linalg.norm(values, axis=-1, keepdims=True)
+    K = skew_reference(aa).numpy()
+    reference = np.eye(3) + np.sinc(theta / np.pi)[..., None] * K
+    reference += (0.5 * np.sinc(theta / (2 * np.pi))**2)[..., None] * (K @ K)
+    torch.testing.assert_close(R, torch.from_numpy(reference), atol=1e-12, rtol=0)
+    torch.testing.assert_close(R, torch.linalg.matrix_exp(skew_reference(aa)), atol=1e-10, rtol=0)
     torch.testing.assert_close(R @ R.transpose(-1, -2), torch.eye(3, dtype=D).expand_as(R), atol=1e-12, rtol=0)
 
 

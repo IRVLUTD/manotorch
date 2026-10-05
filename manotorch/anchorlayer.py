@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 import torch
 from torch.nn import Module
@@ -11,7 +10,7 @@ DEFAULT_ANCHOR_ROOT = os.path.join(os.path.dirname(__file__), "assets", "anchor"
 
 
 class AnchorLayer(Module):
-    def __init__(self, anchor_root: Optional[str] = None):
+    def __init__(self, anchor_root: str | None = None):
         """
         Args:
             anchor_root: folder with the anchor definitions; defaults to the copy shipped with manotorch.

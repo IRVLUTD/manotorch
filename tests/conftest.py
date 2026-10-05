@@ -22,6 +22,20 @@ requires_mano = pytest.mark.skipif(
 )
 
 
+def pytest_addoption(parser):
+    parser.addoption("--require-mano", action="store_true", help="Fail if either licensed MANO model is missing")
+
+
+def pytest_sessionstart(session):
+    if session.config.getoption("--require-mano") and not _has_mano_models():
+        raise pytest.UsageError(f"Both MANO models are required under {MANO_ASSETS_ROOT}")
+
+
+def pytest_report_header(config):
+    status = "available" if _has_mano_models() else "MISSING: model-dependent tests will be skipped"
+    return f"Licensed MANO models: {status}; root={MANO_ASSETS_ROOT} (use --require-mano for release validation)"
+
+
 @pytest.fixture(scope="session")
 def mano_root():
     return MANO_ASSETS_ROOT

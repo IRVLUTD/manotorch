@@ -32,7 +32,10 @@ uv sync                  # core dependencies + dev tools
 uv sync --extra vis      # + pyvista, trimesh, imageio, tqdm for the demo scripts
 ```
 
-Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`. Run the tests with `uv run pytest` (they need the MANO model files, see below; set `MANO_ASSETS_ROOT` if they are not under `assets/mano`).
+Run commands inside the environment with `uv run`, e.g. `uv run python scripts/simple_app.py`, or activate it with `source .venv/bin/activate`. Run full model validation with `uv run pytest --require-mano` (set `MANO_ASSETS_ROOT` if the models are not under
+`assets/mano`). Plain `pytest -ra` skips model-dependent tests when the licensed files are missing and reports that
+coverage gap. Public CPU CI exercises Python 3.10 / PyTorch 2.0.1 and Python 3.12 / PyTorch 2.11.0; licensed-model
+and CUDA validation must run separately.
 
 ### Option 2: existing environment
 
@@ -43,7 +46,15 @@ python -m pip install -e .            # core dependencies only
 python -m pip install -e ".[vis]"     # + pyvista, trimesh, imageio, tqdm for the demo scripts
 ```
 
+With older PyTorch builds such as 2.0.1, use NumPy 1.x (`python -m pip install "numpy<2"`); their NumPy bridge is
+incompatible with NumPy 2. The development lock uses PyTorch 2.11 and NumPy 2.
+
 To use manotorch as a dependency of another project: `python -m pip install "git+https://github.com/IRVLUTD/manotorch.git"`.
+
+For the reproducible **0.1.0** release, install from the tag:
+`python -m pip install "git+https://github.com/IRVLUTD/manotorch.git@v0.1.0"`.
+Wheel and source archives are available on [GitHub Releases](https://github.com/IRVLUTD/manotorch/releases/tag/v0.1.0).
+See [release validation and publishing](doc/releasing.md) for the CI coverage and publishing procedure.
 
 manotorch is configured entirely through [pyproject.toml](pyproject.toml), so a regular `pip install` works without any extra build flags. chumpy is not required.
 
@@ -59,6 +70,9 @@ manotorch is configured entirely through [pyproject.toml](pyproject.toml), so a 
        ├── MANO_LEFT.pkl
        └── MANO_RIGHT.pkl
    ```
+
+   A flat model folder is also accepted. Legacy `MANO_{SIDE}_new.pkl` and `MANO_{SIDE}_np.pkl` files are fallbacks
+   when neither the canonical NPZ nor pickle exists. The `models/` subfolder takes precedence over a flat folder.
 
    The original pickles are read directly with numpy, through a restricted unpickler that refuses anything but the
    numpy, chumpy and scipy data a MANO file contains; chumpy and scipy are not needed.
@@ -105,28 +119,54 @@ non-zero betas a left hand is not the mirror of the right hand with the same bet
 
 The anatomy aligned Euler angles of `AxisLayerFK` (twist, spread, bend) follow the same convention for both hands:
 a left-hand pose mirrored from a right-hand pose gives the same angles, `compose()` takes them back for either hand,
-and the `AnatomyConstraintLossEE` limits apply in the same anatomical direction.
+and the `AnatomyConstraintLossEE` limits apply in the same anatomical direction. This recovers articulation;
+`AxisLayerFK` does not encode the global wrist rotation, which callers must retain separately.
 
 ### Speed
 
-The layer has no host-device synchronization and compiles into a single graph. On small batches the eager GPU time is
-dominated by kernel launches, which `torch.compile` removes (on an RTX 4090, a forward of one hand takes 0.09 ms
-instead of 1 ms, and a forward + backward of 114 hands 0.6 ms instead of 4 ms):
+`ManoLayer` runs in eager mode by default and does not compile itself. Keep eager as the default for general use,
+changing input shapes, debugging and older environments. Callers can opt into compilation for repeated fixed-shape
+GPU fitting after validating runtime and gradients in their target environment. Compiled fitting was measured with
+PyTorch 2.11; these results do not establish compatibility across every supported PyTorch version and device.
+
+The steady-state layer has no host-device synchronization and compiles into a single graph. On small batches,
+kernel-launch overhead can dominate eager execution; `torch.compile` fuses those operations and can use CUDA graphs:
 
 ```python
-mano_layer = torch.compile(ManoLayer(...).cuda(), mode="reduce-overhead")  # CUDA graphs; fixed input shapes
+mano_layer = ManoLayer(...).cuda()  # default: eager
+# Optional for repeated fixed-shape GPU workloads:
+mano_layer = torch.compile(mano_layer, mode="reduce-overhead")
 ```
 
-Callers that need only the joints (fitting, retargeting) can skip the mesh: `mano_layer(pose, betas, joints_only=True)` skins only the 5 fingertip vertices and returns `verts=None`, with the same joints and `transforms_abs` up to float rounding. On an RTX 4090 a batch of 16384 hands takes 1.7 ms instead of 15 ms and 104 MiB instead of 1.4 GiB; batches of a few hundred hands are bound by kernel launches and gain nothing. A `(1, 10)` `betas` is shared across the batch.
+Compilation adds a first-call cost and may repeat when shapes, dtype or configuration change.
+`reduce-overhead` can retain extra CUDA workspace; graph breaks or unsupported autodiff operations can prevent
+full-graph compilation. Fixed-shape repeated fitting can amortize the cost, while short or changing workloads
+should also be measured in eager mode. See the [PyTorch compile documentation](https://docs.pytorch.org/docs/2.11/generated/torch.compile.html).
+
+Callers that need only the joints (fitting, retargeting) can skip the mesh: `mano_layer(pose, betas, joints_only=True)`
+skins only the 5 fingertip vertices and returns `verts=None`, with the same joints and `transforms_abs` up to float
+rounding. This reduces mesh work and memory substantially at large batches; small-batch latency still depends on
+launch overhead and compilation. A `(1, 10)` `betas` is shared across the batch. Consult the fitting benchmark for
+measurements and convergence, rather than treating a single hardware timing as a performance guarantee.
+
+In eager mode, the layer also supports `torch.func.jacrev`, `vmap`, and `jvp`, including the custom skinning step.
+Rotation conversions support second derivatives at zero. These eager checks do not establish second-derivative
+or JVP compatibility through `torch.compile`; validate those combinations separately if needed.
+Euler extraction chooses its last angle as zero at
+gimbal lock; this inverse is not smooth at the singularity.
+
+See [the fitting benchmark](doc/benchmark.md) for reproducible measurements on fixed MANO poses and real sequences.
 
 ### Reading the MANO training poses
 
 The MANO website provides the poses the model was trained with (_Training Scans Registrations_). They load with
-`manotorch.utils.mano_io.load_mano_pickle` and are reproduced exactly (to 1e-16 m in float64) by:
+`manotorch.utils.mano_io.load_mano_pickle`. Evaluate their pose conventions as follows. Model buffers are loaded
+as float32 even when the layer is subsequently converted with `.double()`; comparisons with the original float64
+model therefore include parameter rounding and are not exact to machine precision:
 
 | Data | How to evaluate it |
 | --- | --- |
-| `handsOnly_REGISTRATIONS_r_lm___POSES/*.pkl`: `pose` (48,), `betas`, `trans`, all right hands (left ones mirrored) | `ManoLayer(side="right", use_pca=False, flat_hand_mean=True)(pose, betas).verts + trans` equals `v`; `transforms_abs[..., :3, 3] + trans` equals `J_transformed` |
+| `handsOnly_REGISTRATIONS_r_lm___POSES/*.pkl`: `pose` (48,), `betas`, `trans`, all right hands (left ones mirrored) | `ManoLayer(side="right", use_pca=False, flat_hand_mean=True)(pose, betas).verts + trans` reproduces `v` within model-parameter rounding; `transforms_abs[..., :3, 3] + trans` similarly reproduces `J_transformed` |
 | `handsOnly_REGISTRATIONS_r_lm___POSES___{R,L}.npy`: (1554, 45) articulation only | prepend 3 zeros for the global rotation; `L` is `R` mirrored for the left model, i.e. the y and z components of each joint's axis-angle negated |
 | synthetic sequences `handPose_*.pkl`: lists of (78,) vectors, `[0:66]` all zero | no metadata ships with them; they match the SMPL+H pose layout of the official code (66 body values, then 6 PCA coefficients of the left hand `[66:72]` and of the right hand `[72:78]`, `flat_hand_mean=False` by default): `ManoLayer(side=..., use_pca=True, ncomps=6, flat_hand_mean=False)` with 3 zeros prepended. With `flat_hand_mean=False` the poses lie as close to the training poses as 6 PCA components allow |
 
@@ -150,23 +190,94 @@ Notable users: manopth (DexYCB, ObMan), upstream manotorch (OakInk, OakInk2, Art
 
 Accuracy against the official chumpy model in float64, for random poses, shapes and translations of both hands, in full axis-angle, 15-component PCA and rotation-matrix input ([scripts/compare_mano_layers.py](scripts/compare_mano_layers.py), 32 hands per setting): all five implementations agree to 1.3e-5 mm in float64 and to 1.7e-4 mm in float32 (largest error over the vertices and the 16 MANO joints). Fingertips are not compared, since the implementations sample different vertices.
 
+#### Eager runtime comparison (2026-10-05)
+
+Full mesh, right hand, float32, flat mean and full 48-value axis-angle input; RTX 4090,
+PyTorch 2.11.0+cu126 / NumPy 2.5.3, 8 CPU threads. These are eager measurements with autograd enabled;
+forward + backward differentiates a vertex MSE with respect to pose and shape. Model loading and warmup are
+excluded, and Adam is not included. Each cell is the median of 7 interleaved groups of 20 calls:
+
+| Batch | Measurement (ms) | This fork | Upstream | manopth | smplx MANO | smplx MANOLayer |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | forward | 4.705 | 8.373 | 6.883 | 5.396 | 5.786 |
+| 1 | forward + backward | 13.014 | 20.451 | 17.327 | 15.991 | 17.360 |
+| 128 | forward | 4.929 | 8.578 | 7.073 | 5.637 | 6.026 |
+| 128 | forward + backward | 13.885 | 21.034 | 18.135 | 16.410 | 17.824 |
+| 1024 | forward | 4.987 | 9.051 | 7.671 | 5.825 | 6.236 |
+| 1024 | forward + backward | 13.968 | 22.100 | 18.777 | 17.303 | 18.675 |
+
+`MANOLayer` includes conversion from axis-angle to rotation matrices. The timed adapters normalize metres
+and select the same 16 MANO joints; fingertip conventions differ. Upstream and manopth use an array-loading
+shim at construction to avoid installing chumpy; their timed mathematical code is unchanged. The official
+chumpy model is excluded from this GPU comparison.
+
+Across both hands and batches 1/128/1024, this fork's eager forward is 1.70–2.19× faster than upstream and
+forward + backward is 1.48–2.10× faster in this run. The latest coefficient batching reduces time by
+6.1–9.1% / 7.5–10.6% versus the initial zero-angle correctness fix. It still takes longer than the earlier
+Claude-optimized `c936b59` (14–22% / 8–11%), whose zero-angle second derivatives were not safe.
+Shared-machine load affects absolute timings; these measurements do not guarantee the same ratios in a fitting loop.
+See [the pinned sources and reproduction commands](doc/benchmark.md#eager-comparison-with-other-mano-layers)
+and [scripts/benchmark_layers.py](scripts/benchmark_layers.py).
+
+##### Complete eager MANO fitting with anatomy loss
+
+Median **total time for 100 Adam updates**, including MANO, optional AxisLayerFK/Euler/anatomy loss,
+backward and Adam. Same hardware/software as above, right hand, full mesh, float32, flat mean; fit the
+16 common MANO joints from frozen training-pose targets. Both objectives share pose/shape/translation
+initialization and Adam learning rates 0.01/0.02/0.001. The anatomy objective is joint coordinate MSE
+in metres plus `1e-4 * mean anatomy penalty` in radians. Each cell is the median of 6 interleaved fits:
+
+| Batch | Fitting objective | This fork (s) | Claude c936b59 (s) | Upstream (s) |
+| --- | --- | --- | --- | --- |
+| 1 | Joint MSE only | 1.482 | 1.394 | 2.269 |
+| 1 | Joint MSE + anatomy loss | 2.338 | 3.406 | 4.320 |
+| 128 | Joint MSE only | 1.097 | 0.786 | 1.236 |
+| 128 | Joint MSE + anatomy loss | 1.773 | 2.365 | 3.001 |
+| 1024 | Joint MSE only | 0.594 | 0.514 | 0.896 |
+| 1024 | Joint MSE + anatomy loss | 2.379 | 3.468 | 3.506 |
+
+Each revision uses its own MANO/FK/loss code, with a shared right-hand reference basis and default limits
+assigned at construction to keep the objective consistent. Loading, construction, warmup, Adam-state reset
+and metric collection are outside timing. No compilation is used. manopth/smplx do not expose the same
+anatomy chain, so this full-pipeline table compares the three manotorch versions separately.
+
+With anatomy loss, this fork is 1.33–1.46× faster than Claude `c936b59` and 1.47–1.85× faster than upstream
+in this run; the vectorized loss contributes to the full-loop gain. Final cross-version RMSE differs by at
+most 3.03e-5 mm. The prior changes the fit: at batch 128, this fork's RMSE is 0.232 mm without it and
+2.337 mm with it, while the latter's mean anatomy penalty falls from 0.447 to 0.0279 rad. This weight is a
+benchmark choice, not a tuned recommendation. Shared-machine load varied; compare implementations within
+a row and retain raw groups before claiming a precise added cost or speedup. These fitting times cannot
+be directly compared with the vertex-MSE layer measurements above.
+
+Reproduce with [the anatomy fitting benchmark](scripts/benchmark_fitting_anatomy.py), using
+[its setup and commands](scripts/README.md).
+The complete methodology is in [doc/benchmark.md](doc/benchmark.md#complete-eager-fitting-with-anatomy-loss).
+
 ### Demos
+
+See [the scripts usage guide](scripts/README.md) for dependencies, commands, inputs/outputs and benchmark scope.
 
 | [Visualize](scripts/simple_app.py) | [Compose Hand](scripts/simple_compose.py) | [Error Correction](scripts/simple_anatomy_loss.py) |
 | :--------------------------------: | :---------------------------------------: | :------------------------------------------------: |
-|       ![](doc/axis_new.gif)        |      ![](doc/simple_compose_new.gif)      |            ![](doc/pose_correction.gif)            |
+| ![Anatomical axes of mirrored right and left hands](doc/axis_new.gif) | ![Right and left hands composed from the same anatomical Euler angles](doc/simple_compose_new.gif) | ![Opaque hand surface showing anatomy loss correcting an implausible index-finger pose](doc/pose_correction.gif) |
+| Anatomical axes on mirrored hands. | The same Euler angles compose both hands. | Opaque surface; anatomy loss brings the index finger into its configured angle ranges. |
+
+Axis colors: red = twist, green = spread, blue = bend. These animations demonstrate geometry and pose correction;
+their playback speed does not represent eager or compiled runtime.
 
 Each script opens an interactive window (install the `vis` extra); with `--gif <path>` it renders a GIF off-screen instead. The GIFs above come from:
 
 ```shell
-uv run python scripts/simple_app.py --gif doc/axis_new.gif                # also: --mode anchor
-uv run python scripts/simple_compose.py --gif doc/simple_compose_new.gif
-uv run python scripts/simple_anatomy_loss.py --gif doc/pose_correction.gif
+uv run --extra vis python scripts/simple_app.py --gif doc/axis_new.gif                # also: --mode anchor
+uv run --extra vis python scripts/simple_compose.py --gif doc/simple_compose_new.gif
+uv run --extra vis python scripts/simple_anatomy_loss.py --gif doc/pose_correction.gif
 ```
 
 [scripts/test_compatibility.ipynb](scripts/test_compatibility.ipynb) checks manotorch against manopth and Omid's MANO.
 
-Detailed documentation of the [Anatomical Consistent Basis](README.old.md#anatomical-consistent-basis), [Anatomy Loss](README.old.md#anatomy-loss), [Composing the Hand](README.old.md#composing-the-hand) and [Anchor Interpolation](README.old.md#anchor-interpolation) is kept in [README.old.md](README.old.md) until it is rewritten for this fork.
+See [Anatomical Consistent Basis](doc/features.md#anatomical-consistent-basis), [Anatomy Loss](doc/features.md#anatomy-loss),
+[Composing the Hand](doc/features.md#composing-the-hand), and [Anchor Interpolation](doc/features.md#anchor-interpolation)
+for the current API, joint order, units, and left-hand conventions. The historical README remains in the repository for reference.
 
 ## License
 

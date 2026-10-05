@@ -1,7 +1,8 @@
-import torch
-import numpy as np
 import os
 import pickle
+
+import numpy as np
+import torch
 
 
 def anchor_load_driver(inpath):

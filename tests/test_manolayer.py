@@ -39,7 +39,9 @@ def reference_mano(model, full_pose, betas):
 
     The model parameters are rounded to float32 first, as ManoLayer stores them.
     """
-    t = {k: torch.as_tensor(v).float().double() for k, v in model.items() if not isinstance(v, str)}
+    # Only floating model parameters enter the equations. PyTorch 2.0 does not accept uint32 kintree arrays.
+    t = {k: torch.as_tensor(model[k]).float().double() for k in
+         ("v_template", "shapedirs", "J_regressor", "posedirs", "weights")}
     v_shaped = t["v_template"] + torch.einsum("vck,bk->bvc", t["shapedirs"], betas)
     J = torch.einsum("jv,bvc->bjc", t["J_regressor"], v_shaped)
     R = rodrigues(full_pose.view(-1, 16, 3))
@@ -74,12 +76,12 @@ def make_inputs(layer, batch_size, generator):
 
 
 CONFIGS = [
-    dict(),
-    dict(use_pca=True, flat_hand_mean=False, ncomps=45),
-    dict(use_pca=True, flat_hand_mean=True, ncomps=6),
-    dict(flat_hand_mean=False, center_idx=9),
-    dict(center_idx=0),
-    dict(rot_mode="quat"),
+    {},
+    {"use_pca": True, "flat_hand_mean": False, "ncomps": 45},
+    {"use_pca": True, "flat_hand_mean": True, "ncomps": 6},
+    {"flat_hand_mean": False, "center_idx": 9},
+    {"center_idx": 0},
+    {"rot_mode": "quat"},
 ]
 
 
@@ -107,7 +109,7 @@ def test_matches_reference(mano_root, side, fix_left_shapedirs, cfg):
 
 @pytest.mark.parametrize("rot_mode", ["axisang", "quat"])
 def test_state_dict_and_attributes(mano_root, rot_mode):
-    cfg = dict(use_pca=True, flat_hand_mean=False, ncomps=45) if rot_mode == "axisang" else {}
+    cfg = {"use_pca": True, "flat_hand_mean": False, "ncomps": 45} if rot_mode == "axisang" else {}
     layer = ManoLayer(rot_mode=rot_mode, mano_assets_root=mano_root, **cfg)
     assert list(layer.state_dict()) == STATE_DICT_KEYS[rot_mode]
     shapes = {k: tuple(v.shape) for k, v in layer.state_dict().items()}

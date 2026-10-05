@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Convert a released MANO model pickle (``MANO_{LEFT,RIGHT}.pkl``) to an ``.npz`` that loads without pickle.
 
     python tools/mano_pkl_to_npz.py --input_file weights/mano/MANO_RIGHT.pkl
@@ -65,7 +64,8 @@ class _MANOUnpickler(pickle.Unpickler):
         if (module, name) in _CHUMPY:
             return _chumpy_class(_CHUMPY[module, name])
         if module in ("numpy.core.multiarray", "numpy._core.multiarray") and name == "_reconstruct":
-            return super().find_class("numpy._core.multiarray", name)  # numpy.core: deprecated alias
+            numpy_module = "numpy._core.multiarray" if hasattr(np, "_core") else "numpy.core.multiarray"
+            return super().find_class(numpy_module, name)
         if module == "numpy" and name in ("ndarray", "dtype"):
             return super().find_class(module, name)
         if module.startswith("scipy.sparse") and name in _SPARSE:
@@ -139,7 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     fd, tmp = tempfile.mkstemp(suffix=".npz", dir=out.parent, prefix=f".{out.stem}.")
     os.close(fd)
     try:
-        np.savez(tmp, allow_pickle=False, **arrays)
+        # Numeric/unicode arrays were validated above. Older numpy treats allow_pickle as an extra array key.
+        np.savez(tmp, **arrays)
         with np.load(tmp, allow_pickle=False) as z:
             if sorted(z.files) != sorted(arrays):
                 raise ValueError(f"keys differ after the round trip: {sorted(set(z.files) ^ set(arrays))}")
@@ -151,8 +152,9 @@ def main(argv: list[str] | None = None) -> int:
         umask = os.umask(0)
         os.umask(umask)
         os.chmod(out, 0o666 & ~umask)  # mkstemp's 0600 would hide the weights from the group
-    except Exception as e:
-        os.unlink(tmp)
+    except Exception as e:  # noqa: BLE001 - a CLI must clean its temporary file on any serialization failure
+        if os.path.exists(tmp):
+            os.unlink(tmp)
         print(f"Error: {e}; {out} not written", file=sys.stderr)
         return 1
 
@@ -164,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             note = "  (scipy sparse, stored dense)"
         elif isinstance(v, _ChumpyNode):
             note = f"  (chumpy {v.kind}, evaluated)"
-        print(f"  {k:18s} {str(a.dtype):9s} {str(a.shape):16s}{note}")
+        print(f"  {k:18s} {a.dtype!s:9s} {a.shape!s:16s}{note}")
     return 0
 
 

@@ -28,7 +28,7 @@ def _chain_rotations(R_par_chd: torch.Tensor) -> torch.Tensor:
 
 class AxisAdaptiveLayer(torch.nn.Module):
     def __init__(self, side: str = "right"):
-        super(AxisAdaptiveLayer, self).__init__()
+        super().__init__()
         self.joints_mapping = [5, 6, 7, 9, 10, 11, 17, 18, 19, 13, 14, 15, 1, 2, 3]
         self.parent_joints_mappings = [0, 5, 6, 0, 9, 10, 0, 17, 18, 0, 13, 14, 0, 1, 2]
         self.side = side
@@ -70,7 +70,7 @@ class AxisAdaptiveLayer(torch.nn.Module):
 
 class AxisLayerFK(Module):
     def __init__(self, side: str = "right", mano_assets_root: str = "assets/mano"):
-        super(AxisLayerFK, self).__init__()
+        super().__init__()
         self.transf_parent_mapping = [0, 0, 1, 2, 0, 4, 5, 0, 7, 8, 0, 10, 11, 0, 13, 14]
         self.side = side
 
@@ -91,12 +91,18 @@ class AxisLayerFK(Module):
         # rotation from each template parent's anatomy frame to its template child's anatomy frame
         Ra_par_tmplchd = self.TMPL_R_p_a[:, parent].transpose(2, 3) @ self.TMPL_R_p_a
         self.register_buffer("_Ra_par_tmplchd", Ra_par_tmplchd, persistent=False)
+        self.register_load_state_dict_post_hook(self._refresh_template)
         # The left-hand anatomy frames are right-handed, so a motion mirrored from the right hand turns the opposite
         # way around the twist and spread axes. Angles are reported in the right-hand convention: R -> P R P with
         # P = diag(-1, -1, 1), which negates the twist and spread angles. Mirrored poses then give equal angles.
         sign = torch.tensor([-1.0, -1.0, 1.0] if side == "left" else [1.0, 1.0, 1.0], dtype=torch.float32)
         self.register_buffer("_angle_sign", sign, persistent=False)
         self.register_buffer("_rot_sign", sign[:, None] * sign[None, :], persistent=False)
+
+    @staticmethod
+    def _refresh_template(module, incompatible_keys):
+        basis = module.TMPL_R_p_a
+        module._Ra_par_tmplchd = basis.index_select(1, module._parent).transpose(2, 3) @ basis
 
     def forward(self, transf):
         """extract the anatomy aligned euler angles from the MANO global transformation

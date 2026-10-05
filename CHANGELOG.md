@@ -4,7 +4,45 @@ This repository is a modified version of [lixiny/manotorch](https://github.com/l
 As required by Section 4(b) of the [Apache License 2.0](LICENSE), this file lists the modifications made in this fork and their dates.
 The full history is available in the git log.
 
-## [Unreleased] (2026-10-03 to 2026-10-04)
+## [0.1.0] (2026-10-05)
+
+Changes developed from 2026-10-03 to 2026-10-05. Release artifacts are the wheel and source distribution
+on [GitHub Releases](https://github.com/IRVLUTD/manotorch/releases/tag/v0.1.0).
+
+### Review follow-up (2026-10-05)
+
+- Rotation coefficients use squared-angle Taylor branches near zero, avoiding NaN in second derivatives at the
+  identity. Euler extraction handles all twelve conventions at exact gimbal lock by setting the last angle to zero;
+  the selected inverse at a singularity is not smooth. Inactive atan2 branches are also protected for older PyTorch.
+- Skinning supports `torch.func.jacrev`, `vmap` and `jvp`. Dynamo currently rejects custom JVPs, so compilation uses
+  equivalent native operations that Inductor can fuse; eager execution keeps the custom backward.
+- FK template rotations and wrist-closed faces are refreshed after state-dict loading, without changing persistent keys.
+- Anatomy loss copies and validates configurations and vectorizes its interval penalties, preserving its output order,
+  reduction modes and editable configuration lists. Device/dtype changes initialize its nonpersistent limit buffers;
+  explicit module dtype conversions invalidate rounded limits so they are rebuilt from their degree strings.
+- Model discovery also accepts flat asset folders and legacy `*_new.pkl` / `*_np.pkl` files. A restricted Latin-1 bytes
+  reconstruction supports protocol-2 NumPy pickles without importing scipy or arbitrary codecs.
+- Added regression coverage, explicit `--require-mano` validation, fixed Ruff rules, CPU CI and installed-wheel resource
+  checks. Minimum supported PyTorch is now 2.0.1, validated with Python 3.10 / NumPy 1.26; CUDA validation uses 2.11.
+- Added frozen-target MANO fitting benchmarks, selected ARCTIC/HO-Cap validation samples and downstream numerical audits.
+  Raw licensed data stays outside version control. Rewrote the anatomical-feature documentation and corrected the
+  float64 precision claim: model buffers are initially rounded to float32.
+- Historical timings below describe the original optimization round. Follow-up performance and convergence results
+  are documented in README and `doc/benchmark.md`; additional zero-rotation safeguards change eager operation counts.
+- Eager rotation coefficients are evaluated together, sharing Taylor/sqrt/sinc work. The protected small-angle
+  polynomial drops a term below float64 epsilon, retaining zero-angle second derivatives. The CUDA rotation probe
+  decreases from 42 to 28 launches; interleaved full-mesh measurements reduce forward time by 6.1–9.1% and
+  forward+backward by 7.5–10.6% versus the first correctness fix. Added a pinned eager comparison with upstream,
+  manopth and smplx in `scripts/benchmark_layers.py` and README's "Other MANO layers".
+- The error-correction demo now uses an opaque, smooth-shaded hand surface. Regenerated its README GIF and
+  added descriptive captions and alternative text for the demo animations.
+- Added an interleaved complete eager fitting benchmark with and without anatomy loss, using matched frozen
+  targets, basis buffers, limits and Adam state across current/Claude/upstream manotorch. README reports full-loop
+  timings; `scripts/README.md` documents dependencies, commands, input/output formats and scope for every script.
+- Added a tag-triggered GitHub Release workflow: public CPU tests and lint must pass before the wheel and source
+  distribution are built, checked and published. Licensed MANO models are excluded from release artifacts.
+- Release code and documentation are in English. The development branch may retain its acceptance report;
+  CI prevents that report from entering master or release tags and checks other source documents for CJK text.
 
 `ManoLayer` keeps its constructor arguments (including `**kargs`), its `th_*` buffers with their names, shapes and state-dict keys, its methods and `MANOOutput`. Outputs match the previous version to float32 rounding and the official MANO code to 1.7e-4 mm in float32 (1.3e-5 mm in float64). Incompatible changes are listed under Behavior changes and Removed.
 
@@ -23,7 +61,10 @@ The full history is available in the git log.
 
 - Rewritten forward: pose and shape blend shapes as single matrix products, forward kinematics on rotations and translations over the five finger chains, and skinning without the `(B, 4, 4, 778)` intermediate. The last skinning step is a small `torch.autograd.Function` (elementwise forward and backward, itself differentiable).
 - No host-device synchronization on the GPU (in `ManoLayer`, `AxisLayerFK`, `AnchorLayer` and `AnatomyConstraintLossEE`), and the layer compiles into a single graph with `torch.compile`.
-- `manotorch/utils/geometry.py` rewritten from the textbook formulas (Rodrigues, Shepperd, closed-form Euler angles): `axis_angle_to_matrix` launches 18 CUDA kernels instead of 53.
+- `manotorch/utils/geometry.py` rewritten from the textbook formulas (Rodrigues, Shepperd, closed-form Euler angles):
+  the original optimized `axis_angle_to_matrix` launched 18 CUDA kernels instead of 53. The October 5 follow-up's
+  zero-angle second-derivative safeguards initially increased this to 42 in an eager `(128,16,3)` probe; the subsequent
+  coefficient batching reduces it to 28 while retaining those safeguards. Compile can fuse operations.
 - New `joints_only=True` forward for callers that need only the joints: batch 16384 in 1.7 ms instead of 15 ms and 104 MiB instead of 1.4 GiB.
 
 ### Added

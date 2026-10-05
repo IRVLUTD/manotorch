@@ -50,7 +50,7 @@ def load_official_webuser(webuser_dir):
         module = types.ModuleType(name)
         module.__file__ = os.path.join(webuser_dir, f"{name}.py")
         sys.modules[name] = module  # the files import each other by their bare names
-        exec(compile(source, module.__file__, "exec"), module.__dict__)
+        exec(compile(source, module.__file__, "exec"), module.__dict__)  # noqa: S102 - user-supplied official source
         modules[name] = module
     return modules["serialization"].load_model, modules["smpl_handpca_wrapper_HAND_only"].load_model
 
@@ -80,7 +80,7 @@ def official(load_full, load_pca, model_file, setting, pose, betas, transl):
     """Vertices (B, 778, 3) and 16 joints of the official chumpy model, in float64 and meters."""
     model = load_full(model_file) if setting == "full" else load_pca(model_file, ncomps=NCOMPS, flat_hand_mean=False)
     verts, joints = [], []
-    for p, b, t in zip(pose.numpy(), betas.numpy(), transl.numpy()):
+    for p, b, t in zip(pose.numpy(), betas.numpy(), transl.numpy(), strict=True):
         model.pose[:] = p
         model.betas[:] = b
         model.trans[:] = t

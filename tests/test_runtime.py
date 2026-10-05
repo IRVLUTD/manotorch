@@ -17,14 +17,14 @@ pytestmark = requires_mano
 def build_layers(mano_root, device):
     loss = AnatomyConstraintLossEE()
     loss.setup()
-    return dict(
-        pca=ManoLayer(mano_assets_root=mano_root, use_pca=True, flat_hand_mean=False, ncomps=45).to(device),
-        quat=ManoLayer(mano_assets_root=mano_root, rot_mode="quat").to(device),
-        fk=AxisLayerFK(side="left", mano_assets_root=mano_root).to(device),
-        left=ManoLayer(side="left", mano_assets_root=mano_root, center_idx=9).to(device),
-        anchors=AnchorLayer().to(device),
-        loss=loss,
-    )
+    return {
+        "pca": ManoLayer(mano_assets_root=mano_root, use_pca=True, flat_hand_mean=False, ncomps=45).to(device),
+        "quat": ManoLayer(mano_assets_root=mano_root, rot_mode="quat").to(device),
+        "fk": AxisLayerFK(side="left", mano_assets_root=mano_root).to(device),
+        "left": ManoLayer(side="left", mano_assets_root=mano_root, center_idx=9).to(device),
+        "anchors": AnchorLayer().to(device),
+        "loss": loss,
+    }
 
 
 def run_everything(layers, device):

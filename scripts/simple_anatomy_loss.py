@@ -7,6 +7,7 @@ The index finger starts hyper-extended (negative bend at all three joints), twis
 at its DIP joint, all of which the anatomy limits forbid. Optimizing the finger axis-angles under
 AnatomyConstraintLossEE brings every joint back into its range. The view looks along the bend axis; the arrows
 are the anatomy aligned axes of the index finger: red = back (twist), green = up (spread), blue = left (bend).
+The hand is rendered as an opaque, smooth-shaded surface.
 """
 
 import argparse
@@ -64,7 +65,7 @@ def main(args):
         return out.verts[0], T_g_a[0], ee
 
     def draw(verts, T_g_a, it, loss):
-        add_hand(pl, verts.detach().cpu().numpy(), faces, "right", opacity=0.7, name="hand")
+        add_hand(pl, verts.detach().cpu().numpy(), faces, "right", opacity=1.0, name="hand")
         centers = T_g_a[INDEX_FINGER, :3, 3].detach().cpu().numpy()
         axes = T_g_a[INDEX_FINGER, :3, :3].detach().cpu().numpy()  # columns: back, up, left
         add_axes(pl, centers, axes, mag=0.025, name="axes")
