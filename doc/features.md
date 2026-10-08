@@ -126,3 +126,28 @@ The vertex topology must remain the MANO topology; `joints_only=True` supplies n
 
 Pass `anchor_root="..."` to use custom definitions. Custom mapping pickles are trusted local resources, unlike the
 restricted MANO model loader. Inspect `anchor_mapping` and `merged_vertex_assignment` for contact-region bookkeeping.
+
+## Mesh subdivision
+
+`UpSampleLayer` splits each triangle into four and appends the midpoint of each unique edge.
+It preserves shared edges and face winding; it does not smooth the original mesh.
+
+```python
+from manotorch.upsamplelayer import UpSampleLayer
+
+upsample = UpSampleLayer().prepare(mano.th_faces, vertex_count=778).to(out.verts.device)
+dense_vertices, dense_faces = upsample(out.verts)
+```
+
+For changing topology, the existing `upsample(vertices, faces)` call remains supported. Reusing the same
+faces tensor caches its topology; ordinary in-place edits invalidate that cache. Passing a freshly constructed
+faces tensor rebuilds it. `prepare` takes a snapshot, so call it again when intentionally changing that snapshot,
+including edits through `.data` or external storage which bypass version counters. Inference tensors without
+version counters should use the snapshot path for caching.
+
+Shared `(F,3)` / `(1,F,3)` faces broadcast across the vertex batch. Distinct `(B,F,3)` topologies need equal
+unique-edge counts for a rectangular output. Cached integer buffers follow device conversions and are omitted
+from checkpoints; prepare the topology again after constructing or loading a layer. Returned faces have independent
+storage, so editing them does not corrupt the cache. `clear_cache()` releases the cached topology.
+
+This layer is separate from MANO forward and fitting: its cache speeds repeated subdivision only.

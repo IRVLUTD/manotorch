@@ -26,10 +26,18 @@ def synchronize(device):
         torch.cuda.synchronize(device)
 
 
-def measure(fn, device, repeats):
+def mark_step(enabled=True):
+    if not enabled:
+        return
+    fn = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
+    if fn is not None:
+        fn()
+
+
+def measure(fn, device, repeats, compiled=False):
     """Synchronized wall time includes launch overhead, excludes data loading and compilation."""
     for _ in range(5):
-        torch.compiler.cudagraph_mark_step_begin() if hasattr(torch, "compiler") else None
+        mark_step(compiled and device.type == "cuda")
         fn()
     synchronize(device)
     if device.type == "cuda":
@@ -39,7 +47,7 @@ def measure(fn, device, repeats):
         initial = 0
     start = time.perf_counter()
     for _ in range(repeats):
-        torch.compiler.cudagraph_mark_step_begin() if hasattr(torch, "compiler") else None
+        mark_step(compiled and device.type == "cuda")
         fn()
     synchronize(device)
     elapsed = (time.perf_counter() - start) * 1000 / repeats
@@ -117,8 +125,8 @@ def run_case(args, layer_class, arrays, device, side, batch, task, mode):
         (predict(p, b, t) - target).square().mean().backward()
 
     # Keep grad mode enabled for forward: fitting retains an autograd graph.
-    forward = measure(lambda: predict(p, b, t), device, args.repeats)
-    forward_backward = measure(backward, device, args.repeats)
+    forward = measure(lambda: predict(p, b, t), device, args.repeats, compiled=mode == "compile")
+    forward_backward = measure(backward, device, args.repeats, compiled=mode == "compile")
     optimizer = torch.optim.Adam([
         {"params": [p], "lr": 0.01}, {"params": [b], "lr": 0.02}, {"params": [t], "lr": 0.001},
     ], foreach=False)
@@ -131,7 +139,7 @@ def run_case(args, layer_class, arrays, device, side, batch, task, mode):
         initial_memory = torch.cuda.memory_allocated(device)
     start = time.perf_counter()
     for _ in range(args.steps):
-        torch.compiler.cudagraph_mark_step_begin() if hasattr(torch, "compiler") else None
+        mark_step(mode == "compile" and device.type == "cuda")
         optimizer.zero_grad(set_to_none=True)
         residual = predict(p, b, t) - target
         errors.append(residual.detach().square().sum(-1).mean().sqrt())
@@ -139,17 +147,18 @@ def run_case(args, layer_class, arrays, device, side, batch, task, mode):
         optimizer.step()
     synchronize(device)
     fit_ms = (time.perf_counter() - start) * 1000
+    fit_memory = (torch.cuda.max_memory_allocated(device) - initial_memory) / 2**20 if device.type == "cuda" else None
     curve = (torch.stack(errors) * 1000).cpu().tolist()
     # Final prediction uses the same grad-mode graph as fitting, avoiding a second compile variant.
-    torch.compiler.cudagraph_mark_step_begin() if hasattr(torch, "compiler") else None
+    mark_step(mode == "compile" and device.type == "cuda")
     final_error = ((predict(p, b, t).detach() - target).square().sum(-1).mean().sqrt() * 1000).item()
+    curve.append(final_error)  # Index equals completed updates, including the final optimizer step.
     threshold = next((i for i, e in enumerate(curve) if e <= args.threshold_mm), None)
     return {
         "side": side, "batch": batch, "task": task, "mode": mode, "compile_seconds": compile_seconds,
         "forward": forward, "forward_backward": forward_backward, "fit_step_ms": fit_ms / args.steps,
-        "fit_total_ms": fit_ms, "fit_peak_extra_mib": (
-            (torch.cuda.max_memory_allocated(device) - initial_memory) / 2**20 if device.type == "cuda" else None
-        ), "initial_rmse_mm": initial_error, "final_rmse_mm": final_error, "curve_rmse_mm": curve,
+        "fit_total_ms": fit_ms, "fit_peak_extra_mib": fit_memory,
+        "initial_rmse_mm": initial_error, "final_rmse_mm": final_error, "curve_rmse_mm": curve,
         "threshold_mm": args.threshold_mm, "steps_to_threshold": threshold,
         "estimated_ms_to_threshold": threshold * fit_ms / args.steps if threshold is not None else None,
     }
@@ -192,6 +201,7 @@ def main():
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "implementation_root": str(args.implementation_root.resolve()), "targets_sha256": digest(args.targets),
         "steps": args.steps, "repeats": args.repeats, "source": args.source,
+        "schema_version": 2, "curve_convention": "index = completed updates; includes final prediction",
         "timing": "synchronized wall clock, warm steady state, fitting optimizer eager",
         "implementation_sha256": hashlib.sha256(b"".join(
             p.relative_to(args.implementation_root).as_posix().encode() + p.read_bytes()

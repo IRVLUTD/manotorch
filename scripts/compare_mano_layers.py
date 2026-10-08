@@ -100,12 +100,12 @@ def run_implementations(mods, mano_root, side, setting, pose, betas, transl, dty
 
     def timed(fn):
         fn()
-        if device == "cuda":
-            torch.cuda.synchronize()
+        if torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
         start = time.perf_counter()
         result = fn()
-        if device == "cuda":
-            torch.cuda.synchronize()
+        if torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
         return result, (time.perf_counter() - start) * 1e3
 
     if setting in ("full", "pca15"):
@@ -183,4 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("--thirdparty", required=True, help="folder with manopth, smplx and manotorch_upstream")
     parser.add_argument("--mano-assets-root", default="assets/mano")
     parser.add_argument("--samples", type=int, default=32, help="hands per setting and side")
-    main(parser.parse_args())
+    args = parser.parse_args()
+    if args.samples < 1:
+        parser.error("samples must be positive")
+    main(args)

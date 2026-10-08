@@ -4,6 +4,49 @@ This repository is a modified version of [lixiny/manotorch](https://github.com/l
 As required by Section 4(b) of the [Apache License 2.0](LICENSE), this file lists the modifications made in this fork and their dates.
 The full history is available in the git log.
 
+## [Unreleased]
+
+- Organize MANO_Poses QC into symmetric left/right data/result folders and three root-level PDFs: one
+  combined statistics/paired-image report and two separate hand atlases. Preserve historical fitting,
+  use portable manifest paths and expose a separate atlas PDF destination. Use a proper side-specific
+  display rotation to show both hands upright while preserving handedness and measured errors.
+- Keep subdivision caches created or transferred during inference warmup reusable for training backward;
+  match indexed CUDA accuracy filenames in the right-only statistics publisher.
+
+- Add paired right/left MANO_Poses QC bundles with full scanner-frame parameters, targets, independent NumPy
+  references, raw dense models and a source snapshot. Portable tools support cached GPU atlas rendering,
+  fresh inference, left statistics and relative-path checksum verification without the original dataset folder.
+- Distinguish corrected MANO_LEFT implementation accuracy from left/right asset mirror residual; retain the
+  official equivalent left articulation vectors, mirror global rotation/translation and verify triangle winding.
+
+### Registration validation and script audit (2026-10-08)
+
+- Add original-registration accuracy/stability/inference/fitting validation and opaque target/reconstruction/error
+  QC rendering under `scripts/`. Read independent scanner-frame targets, map 16 MANO joints correctly, audit
+  every file, and retain source/model hashes, per-hand errors and separate metric-free fitting timings.
+- Add an optional QC statistics PDF builder with complete per-registration CSV/JSON and a proposed full-atlas index;
+  document the separation between registration coverage, representative preview and synthetic sequence QC.
+- Add complete A3 registration-atlas rendering with opaque lit surfaces, fixed global error scale, native text,
+  subject bookmarks, linked worst-error index, selected-page PNG exports and checked sample/PDF provenance.
+- Include the final optimizer update in fitting error curves and thresholds (result schema 2), capture peak
+  fitting allocation before diagnostics, and guard CUDA-graph step markers on older PyTorch versions. Only
+  compiled CUDA measurements invoke those markers; eager/CPU runs avoid unnecessary Inductor initialization.
+- Interleave seeded isolated anatomy benchmarks and synchronize indexed CUDA devices. Improve missing/empty
+  real-data diagnostics, solve PCA coefficients without explicitly inverting the basis, and clarify notebook
+  working-directory and demo camera descriptions. Add asset-independent script regressions to public CPU CI.
+
+### Follow-up (2026-10-05)
+
+- Cache `UpSampleLayer` edge indices and child faces in nonpersistent device buffers. Existing two-argument
+  calls invalidate by faces identity/version; explicit `prepare()` snapshots support repeated native tensor
+  execution without CPU topology work. Preserve edge order, winding, output ownership and differentiable
+  midpoint interpolation; add cache, gradient, device and minimum-version regression coverage.
+- Enlarge README demo models and legends, use upright display rotations and bounded camera sweeps, highlight
+  the composed index curl, and add an anchor interpolation illustration. Keep error-correction surfaces opaque
+  and recompute displayed poses/losses after the labeled optimizer update.
+- Add documented subdivision benchmarks and standalone Triton kernel feasibility experiments. Experimental
+  kernels are not imported by the package, do not change the default eager backend and are not release-ready.
+
 ## [0.1.0] (2026-10-05)
 
 Changes developed from 2026-10-03 to 2026-10-05. Release artifacts are the wheel and source distribution

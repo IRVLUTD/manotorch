@@ -11,7 +11,7 @@ The hand is rendered as an opaque, smooth-shaded surface.
 """
 
 import argparse
-from math import pi
+from math import isfinite, pi
 
 import torch
 import tqdm
@@ -73,9 +73,10 @@ def main(args):
 
     verts, T_g_a, ee_init = forward()
     ee = ee_init
-    pl = new_plotter(off_screen=args.gif is not None, window_size=(768, 512))
+    pl = new_plotter(off_screen=args.gif is not None, window_size=(960, 600))
     draw(verts, T_g_a, 0, anatomy_loss(ee_init).item())
     pl.camera_position = [(0.0, 0.0, 0.36), (0.0, 0.01, 0.0), (0.0, 1.0, 0.0)]
+    pl.camera.zoom(1.22)
     if args.gif is not None:
         open_gif(pl, args.gif)
         pl.write_frame()
@@ -91,7 +92,9 @@ def main(args):
         scheduler.step()
         bar.set_description(f"anatomy loss: {loss.item():.5f}")
         if it % args.draw_every == 0 or it == args.iters:
-            draw(verts, T_g_a, it, loss.item())
+            with torch.no_grad():
+                verts, T_g_a, ee = forward()
+                draw(verts, T_g_a, it, anatomy_loss(ee).item())
             pl.write_frame() if args.gif is not None else pl.update()
 
     deg = lambda e: torch.rad2deg(e[0, INDEX_FINGER]).detach().cpu().numpy().round(1)  # noqa: E731
@@ -111,4 +114,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--draw-every", type=int, default=10, help="iterations between drawn frames")
     parser.add_argument("--mano-assets-root", default="assets/mano")
-    main(parser.parse_args())
+    args = parser.parse_args()
+    if args.iters < 5 or args.draw_every < 1 or not isfinite(args.lr) or args.lr <= 0:
+        parser.error("iters must be >= 5; draw-every and lr must be positive")
+    main(args)

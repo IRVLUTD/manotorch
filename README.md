@@ -157,6 +157,27 @@ gimbal lock; this inverse is not smooth at the singularity.
 
 See [the fitting benchmark](doc/benchmark.md) for reproducible measurements on fixed MANO poses and real sequences.
 
+For independent accuracy and stability checks against all original MANO registration meshes and 16-joint
+targets, use [the registration validation scripts](scripts/README.md#original-registration-accuracy-stability-inference-and-fitting).
+They also measure no-grad inference and batched fitting and can render target/reconstruction/error QC images.
+An optional statistics builder exports a complete QC PDF, per-registration CSV and JSON under `data/qc/MANO_Poses/`.
+The full registration-atlas renderer adds all-hand target/reconstruction/error pages with a global colour scale
+and clickable PDF navigation; commands and GPU requirements are in the script guide above.
+The [self-contained right/left QC workflow](scripts/README.md#self-contained-rightleft-registration-qc)
+packages complete poses, targets, raw models, independent references and a source snapshot for analysis,
+fresh inference and re-rendering without the original dataset folder. Derived left-hand QC separates
+implementation accuracy from the small MANO model mirror residual.
+The bundle stores side-specific data/indices/PNGs in matching `left/` and `right/` folders; its root contains
+one combined `qc_summary.pdf` and separate `registration_atlas_left.pdf` / `registration_atlas_right.pdf`.
+
+`UpSampleLayer` supports a prepared topology cache for repeated mesh subdivision; see
+[mesh subdivision](doc/features.md#mesh-subdivision) and [its benchmark](doc/benchmark.md#topology-cache).
+It is a separate postprocessing layer and does not change MANO forward or fitting runtime.
+
+A standalone [kernel feasibility study](doc/benchmark.md#optional-kernel-feasibility) found a useful Triton
+rotation-inference prototype, but no reliable fitting gain from fusing the final skinning forward. These
+experimental kernels are outside the runtime API; the package retains its native eager default and dependencies.
+
 ### Reading the MANO training poses
 
 The MANO website provides the poses the model was trained with (_Training Scans Registrations_). They load with
@@ -257,10 +278,33 @@ The complete methodology is in [doc/benchmark.md](doc/benchmark.md#complete-eage
 
 See [the scripts usage guide](scripts/README.md) for dependencies, commands, inputs/outputs and benchmark scope.
 
-| [Visualize](scripts/simple_app.py) | [Compose Hand](scripts/simple_compose.py) | [Error Correction](scripts/simple_anatomy_loss.py) |
-| :--------------------------------: | :---------------------------------------: | :------------------------------------------------: |
-| ![Anatomical axes of mirrored right and left hands](doc/axis_new.gif) | ![Right and left hands composed from the same anatomical Euler angles](doc/simple_compose_new.gif) | ![Opaque hand surface showing anatomy loss correcting an implausible index-finger pose](doc/pose_correction.gif) |
-| Anatomical axes on mirrored hands. | The same Euler angles compose both hands. | Opaque surface; anatomy loss brings the index finger into its configured angle ranges. |
+#### Anatomical axes
+
+![Large mirrored right and left hands with a color-coded anatomical axis legend](doc/axis_new.gif)
+
+[Visualize](scripts/simple_app.py): mirrored hands with red/twist, green/spread and blue/bend axes.
+The camera gently sweeps the palm views, keeping the hands and legend readable.
+
+#### Composing the hand
+
+![Mirrored opaque hands with the fully curled index fingers highlighted in gold](doc/simple_compose_new.gif)
+
+[Compose Hand](scripts/simple_compose.py): the same Euler angles compose both hands. Gold highlights the
+index finger, with 90-degree MCP, PIP and DIP bends; the oblique camera reveals the curl.
+
+#### Error correction
+
+![Large opaque hand surface showing anatomy loss correcting an implausible index-finger pose](doc/pose_correction.gif)
+
+[Error Correction](scripts/simple_anatomy_loss.py): anatomy loss brings the index finger into its configured
+angle ranges. The opaque surface and fixed side view show the change; each recorded iteration follows its update.
+
+#### Anchor interpolation
+
+![Mirrored hands showing 32 purple anchors each and a gold anchor with its source triangle](doc/anchor.gif)
+
+[Anchor example](scripts/simple_app.py): purple points are the 32 surface anchors on each hand.
+Gold marks anchor 0 and its source triangle, illustrating barycentric interpolation.
 
 Axis colors: red = twist, green = spread, blue = bend. These animations demonstrate geometry and pose correction;
 their playback speed does not represent eager or compiled runtime.
@@ -268,9 +312,10 @@ their playback speed does not represent eager or compiled runtime.
 Each script opens an interactive window (install the `vis` extra); with `--gif <path>` it renders a GIF off-screen instead. The GIFs above come from:
 
 ```shell
-uv run --extra vis python scripts/simple_app.py --gif doc/axis_new.gif                # also: --mode anchor
+uv run --extra vis python scripts/simple_app.py --gif doc/axis_new.gif
 uv run --extra vis python scripts/simple_compose.py --gif doc/simple_compose_new.gif
 uv run --extra vis python scripts/simple_anatomy_loss.py --gif doc/pose_correction.gif
+uv run --extra vis python scripts/simple_app.py --mode anchor --gif doc/anchor.gif
 ```
 
 [scripts/test_compatibility.ipynb](scripts/test_compatibility.ipynb) checks manotorch against manopth and Omid's MANO.

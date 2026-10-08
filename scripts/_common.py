@@ -13,11 +13,9 @@ LABEL_COLORS = {"right": "#C8643C", "left": "#3A7CA5"}
 AXIS_COLORS = ("#D62728", "#2CA02C", "#1F5FB4")
 AXIS_LEGEND = ("axes: red = twist, green = spread, blue = bend", "dimgray")
 ANCHOR_COLOR = "#7B3294"
-# The two mirrored hands are moved apart by 2 x HAND_GAP along x, the mirror axis, so their wrists do not overlap.
-HAND_GAP = 0.02
-GIF_SIZE = 768
-# Orbit radius of the GIFs, relative to the scene size; leaves a margin for the legend.
-ORBIT_FACTOR = 2.6
+# Displayed hands are moved apart by 2 x HAND_GAP along screen x so their wrists do not overlap.
+HAND_GAP = 0.10
+GIF_SIZE = 960
 
 
 def get_device():
@@ -28,7 +26,7 @@ def get_device():
     return "cpu"
 
 
-def new_plotter(off_screen: bool, window_size=(GIF_SIZE, GIF_SIZE)) -> pv.Plotter:
+def new_plotter(off_screen: bool, window_size=(GIF_SIZE, 640)) -> pv.Plotter:
     pl = pv.Plotter(off_screen=off_screen, window_size=window_size)
     pl.enable_depth_peeling(number_of_peels=8)  # draw the translucent surfaces in depth order
     pl.enable_anti_aliasing("ssaa")
@@ -36,15 +34,42 @@ def new_plotter(off_screen: bool, window_size=(GIF_SIZE, GIF_SIZE)) -> pv.Plotte
 
 
 def hand_offset(side: str) -> np.ndarray:
-    """Translation that moves a hand away from the mirror plane, see HAND_GAP."""
+    """Translation that separates the displayed hands, see HAND_GAP."""
     return np.array([-HAND_GAP if side == "right" else HAND_GAP, 0.0, 0.0])
 
 
-def add_hand(pl: pv.Plotter, verts, faces, side: str, opacity: float = 0.6, name: str | None = None):
-    """Translucent hand mesh (closed faces). Only the faces turned to the camera are drawn: through a translucent
-    skin, the inner faces (back of the palm, other fingers, wrist cap) would otherwise show as dark patches."""
+def display_rotation(side: str) -> np.ndarray:
+    """Rigid display rotations: both hands point up and remain mirrored across screen x.
+
+    MANO's fingers run along opposite x directions. These proper rotations only
+    affect the illustration, leaving model coordinates and anatomical angles unchanged.
+    """
+    sign = 1.0 if side == "right" else -1.0
+    return np.array([[0.0, 0.0, sign], [-sign, 0.0, 0.0], [0.0, -1.0, 0.0]])
+
+
+def display_points(side: str, points) -> np.ndarray:
+    return np.asarray(points) @ display_rotation(side).T + hand_offset(side)
+
+
+def display_axes(side: str, axes) -> np.ndarray:
+    return display_rotation(side) @ np.asarray(axes)
+
+
+def add_hand(pl: pv.Plotter, verts, faces, side: str, opacity: float = 0.6, name: str | None = None,
+             highlight=None):
+    """Draw a smooth closed hand, optionally highlighting selected vertices.
+
+    Back-face culling avoids dark patches from inner faces when opacity is below one.
+    """
     mesh = pv.wrap(Trimesh(np.asarray(verts), np.asarray(faces), process=False))
-    pl.add_mesh(mesh, color=HAND_COLORS[side], opacity=opacity, smooth_shading=True, culling="back", name=name)
+    kwargs = {"color": HAND_COLORS[side]}
+    if highlight is not None:
+        colors = np.tile(pv.Color(HAND_COLORS[side]).int_rgb, (mesh.n_points, 1))
+        colors[np.asarray(highlight)] = pv.Color("#FFD166").int_rgb
+        mesh["surface_colors"] = colors.astype(np.uint8)
+        kwargs = {"scalars": "surface_colors", "rgb": True}
+    pl.add_mesh(mesh, opacity=opacity, smooth_shading=True, culling="back", name=name, **kwargs)
 
 
 def add_axes(pl: pv.Plotter, centers, axes, mag: float = 0.02, name: str | None = None):
@@ -54,14 +79,20 @@ def add_axes(pl: pv.Plotter, centers, axes, mag: float = 0.02, name: str | None 
         points = pv.PolyData(np.asarray(centers, dtype=float))
         points["vectors"] = np.asarray(axes, dtype=float)[:, :, k]
         glyphs = points.glyph(orient="vectors", scale=False, factor=mag, geom=arrow)
-        pl.add_mesh(glyphs, color=color, name=None if name is None else f"{name}_{k}")
+        pl.add_mesh(glyphs, color=color, lighting=False, name=None if name is None else f"{name}_{k}")
 
 
 def add_legend(pl: pv.Plotter, lines):
     """Write `(text, color)` lines in the upper left corner."""
     height = pl.window_size[1]
     for i, (text, color) in enumerate(lines):
-        pl.add_text(text, position=(12, height - 28 - 20 * i), color=color, font_size=9, name=f"legend_{i}")
+        y = height - 36 - 28 * i
+        if text == AXIS_LEGEND[0]:
+            for k, (label, axis_color, x) in enumerate(zip(
+                    ("twist (red)", "spread (green)", "bend (blue)"), AXIS_COLORS, (18, 220, 485), strict=True)):
+                pl.add_text(label, position=(x, y), color=axis_color, font_size=14, name=f"legend_{i}_{k}")
+        else:
+            pl.add_text(text, position=(18, y), color=color, font_size=14, name=f"legend_{i}")
 
 
 def hands_legend(sides=("right", "left")):
@@ -72,8 +103,8 @@ def open_gif(pl: pv.Plotter, gif: str, fps: int = 10):
     pl.open_gif(gif, fps=fps)
 
 
-def compress_gif(gif: str, colors: int = 96):
-    """Re-encode `gif` with one palette shared by all frames and no dithering: about half the size."""
+def compress_gif(gif: str, colors: int = 128):
+    """Re-encode with one shared palette and preserve thin annotation colors without dithering."""
     with Image.open(gif) as im:
         duration = im.info.get("duration", 100)
         frames = []
@@ -84,24 +115,51 @@ def compress_gif(gif: str, colors: int = 96):
     montage = Image.new("RGB", (picks[0].width, picks[0].height * len(picks)))
     for i, frame in enumerate(picks):
         montage.paste(frame, (0, i * frame.height))
-    palette = montage.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
+    # Reserve annotation colors; quantizing mostly skin/background otherwise loses thin RGB arrows.
+    reserved = [*AXIS_COLORS, *HAND_COLORS.values(), *LABEL_COLORS.values(), ANCHOR_COLOR,
+                "#FFD166", "#8C5B00", "#000000", "#FFFFFF"]
+    base_colors = colors - len(reserved)
+    palette = montage.quantize(colors=base_colors, method=Image.Quantize.MEDIANCUT)
+    entries = palette.getpalette()
+    for i, color in enumerate(reserved):
+        entries[(base_colors + i) * 3:(base_colors + i + 1) * 3] = pv.Color(color).int_rgb
+    palette.putpalette(entries)
     frames = [frame.quantize(palette=palette, dither=Image.Dither.NONE) for frame in frames]
     frames[0].save(gif, save_all=True, append_images=frames[1:], duration=duration, loop=0, optimize=True)
 
 
-def show_or_record(pl: pv.Plotter, gif: str | None):
-    """Open an interactive window, or write an orbit around the scene to `gif`."""
+def show_or_record(pl: pv.Plotter, gif: str | None, oblique: float = 0.25, sweep: float = 25.0):
+    """Fit a large orthographic view and gently sweep it, avoiding edge-on frames."""
+    bounds = np.asarray(pl.bounds).reshape(3, 2)
+    center = bounds.mean(1)
+    center[1] += (bounds[1, 1] - bounds[1, 0]) * 0.12  # Reserve space above the meshes for the legend.
+    corners = np.array(np.meshgrid(*bounds, indexing="ij")).reshape(3, -1).T - center
+    angles = np.arctan(oblique) + np.deg2rad(sweep) * np.sin(np.linspace(0, 2 * np.pi, 48))
+    directions = np.array([np.sin(angles), np.full_like(angles, 0.12), np.cos(angles)]).T
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    up = np.array([0.0, 1.0, 0.0])
+    aspect = pl.window_size[0] / pl.window_size[1]
+    scale = 0.0
+    for direction in directions:
+        right = np.cross(up, direction)
+        right /= np.linalg.norm(right)
+        vertical = np.cross(direction, right)
+        scale = max(scale, np.abs(corners @ vertical).max(), np.abs(corners @ right).max() / aspect)
+    pl.enable_parallel_projection()
+    pl.camera.parallel_scale = scale * 1.10
+
+    def camera(direction):
+        pl.camera_position = [tuple(center + direction), tuple(center), tuple(up)]
+        pl.reset_camera_clipping_range()
+
+    camera(directions[0])
     if gif is None:
         pl.add_camera_orientation_widget()
         pl.show()
         return
-    view_up = (-1.0, 0.0, 0.0)
-    path = pl.generate_orbital_path(factor=ORBIT_FACTOR, n_points=36, viewup=view_up, shift=0.1)
-    focus = tuple(pl.center)
     open_gif(pl, gif)
-    # set the camera explicitly: Plotter.orbit_on_path refits the view, so its orbit radius has no effect
-    for point in path.points:
-        pl.camera_position = [tuple(point), focus, view_up]
+    for direction in directions:
+        camera(direction)
         pl.write_frame()
     pl.close()
     compress_gif(gif)

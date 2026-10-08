@@ -1,13 +1,14 @@
 """Visualize the anatomy aligned axes (or the anchors) of a random right hand and its left counterpart.
 
     uv run python scripts/simple_app.py                              # interactive window
-    uv run python scripts/simple_app.py --gif doc/axis_new.gif       # orbiting GIF, rendered off-screen
+    uv run python scripts/simple_app.py --gif doc/axis_new.gif       # camera-sweep GIF, rendered off-screen
     uv run python scripts/simple_app.py --mode anchor --gif doc/anchor.gif
 
 The random pose is drawn in the anatomy aligned angle space, so it stays natural: each finger curls by a random
 amount with coupled flexion of its three joints, the MCP joints spread a little, and nothing twists. Both hands
-are composed from the same angles, so the left hand is the mirror of the right one; they are drawn a few
-centimeters apart. Arrows: red = back (twist), green = up (spread), blue = left (bend).
+are composed from the same angles, so the left hand is the mirror of the right one. Display rotations place both
+hands upright without changing MANO coordinates. Arrows: red = twist, green = spread, blue = bend.
+Anchor mode draws 32 purple anchors per hand and highlights anchor 0 and its source triangle.
 """
 
 import argparse
@@ -19,8 +20,9 @@ from _common import (
     add_axes,
     add_hand,
     add_legend,
+    display_axes,
+    display_points,
     get_device,
-    hand_offset,
     hands_legend,
     new_plotter,
     show_or_record,
@@ -74,25 +76,30 @@ def main(args):
         verts = mano_results.verts  # (B, 778, 3)
         T_g_a, _, _ = axis_layer(mano_results.transforms_abs)  # (B, 16, 4, 4)
 
-        offset = hand_offset(side)
-        add_hand(pl, verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
+        add_hand(pl, display_points(side, verts[0].cpu().numpy()), mano_layer.get_mano_closed_faces(), side,
+                 opacity=0.65 if args.mode == "axis" else 0.85)
         if args.mode == "axis":
-            centers = T_g_a[0, :, :3, 3].cpu().numpy() + offset  # (16, 3)
-            add_axes(pl, centers, T_g_a[0, :, :3, :3].cpu().numpy())  # columns: back, up, left
+            centers = display_points(side, T_g_a[0, :, :3, 3].cpu().numpy())  # (16, 3)
+            add_axes(pl, centers, display_axes(side, T_g_a[0, :, :3, :3].cpu().numpy()), mag=0.014)
         else:
-            anchors = AnchorLayer().to(device)(verts)[0].cpu().numpy() + offset  # (32, 3)
-            spheres = pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=1.8e-3), orient=False, scale=False)
+            anchor_layer = AnchorLayer().to(device)
+            anchors = display_points(side, anchor_layer(verts)[0].cpu().numpy())  # (32, 3)
+            spheres = pv.PolyData(anchors).glyph(geom=pv.Sphere(radius=2.2e-3), orient=False, scale=False)
             pl.add_mesh(spheres, color=ANCHOR_COLOR)
+            triangle = display_points(side, verts[0, anchor_layer.face_vert_idx[0, 0]].cpu().numpy())
+            pl.add_mesh(pv.lines_from_points(triangle, close=True), color="#B77900", line_width=4)
+            pl.add_mesh(pv.Sphere(radius=3e-3, center=anchors[0]), color="#FFD166")
 
     lines = hands_legend()
-    add_legend(pl, lines if args.mode == "axis" else lines[:2] + [("anchors", ANCHOR_COLOR)])
+    add_legend(pl, lines if args.mode == "axis" else lines[:2] + [
+        ("32 anchors per hand (purple)", ANCHOR_COLOR), ("anchor 0 and its source triangle highlighted", "#8C5B00")])
     show_or_record(pl, args.gif)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["axis", "anchor"], default="axis", help="visualize the axes or the anchors")
-    parser.add_argument("--gif", default=None, help="write an orbiting GIF here instead of opening a window")
+    parser.add_argument("--gif", default=None, help="write a camera-sweep GIF here instead of opening a window")
     parser.add_argument("--seed", type=int, default=0, help="seed of the random hand pose")
     parser.add_argument("--mano-assets-root", default="assets/mano")
     main(parser.parse_args())

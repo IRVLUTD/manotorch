@@ -20,7 +20,10 @@ def main():
         parser.error("samples must be positive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for dataset in ("arctic", "hocap"):
-        source = sorted((args.root / dataset).glob("*.npz"))[0]
+        sources = sorted((args.root / dataset).glob("*.npz"))
+        if not sources:
+            raise FileNotFoundError(f'No {dataset} exports under {args.root / dataset}')
+        source = sources[0]
         rng = np.random.default_rng(args.seed)
         result, selection = {}, []
         with np.load(source, allow_pickle=False) as z:
@@ -28,6 +31,8 @@ def main():
             if metadata["units"] != "metres" or metadata["rotation"] != "axis-angle":
                 raise ValueError("Expected metre units and axis-angle rotations")
             for index, side in enumerate(metadata["hands"]):
+                if side not in ('right', 'left') or metadata['hands'].count(side) != 1:
+                    raise ValueError('Expected unique right/left names in metadata hands')
                 valid = np.flatnonzero(z["valid"][:, index])
                 ids = rng.permutation(valid)[:args.samples]
                 if len(ids) == 0:
@@ -45,6 +50,8 @@ def main():
                 result.update({side + "_" + key: value for key, value in values.items()})
                 selection.append({"side": side, "array_indices": ids.tolist(),
                                   "frame_indices": z["frame_index"][ids].tolist()})
+        if not selection:
+            raise ValueError(f'No valid hand observations in {source}')
         output = args.output_dir / f"{dataset}_targets.npz"
         np.savez(output, **result)
         manifest = {"source": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),

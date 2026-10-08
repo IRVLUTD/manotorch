@@ -2,6 +2,8 @@
 
 日期：2026-10-05（America/Chicago）。审查基线：`optimize/c936b59`。本文保留在公开开发分支 `optimize`；`master` 和 release tag 明确排除本文，仅发布英文代码及文档。最终发布与远程验证状态以 [GitHub Release](https://github.com/IRVLUTD/manotorch/releases/tag/v0.1.0) 及其 Actions 记录为准。
 
+最新追加：README 插图、UpSampleLayer 缓存与 kernel 收益评估见文末。本轮为 optimize 的本地未发布修改；已发布 v0.1.0 不变。
+
 ## 结论
 
 现有重构的主要收益有代码依据：blend shapes 使用矩阵乘法、FK 按五条指链批量计算、skinning 避免大尺寸齐次中间张量、`joints_only` 只计算五个指尖顶点；依赖和安装资源也完成了实质清理。这些优化值得保留。
@@ -317,3 +319,225 @@ Error Correction GIF 已按用户要求改为不透明 solid surface，重新渲
 - 当前工作分支为 optimize；运行时代码与第一次发布完全一致，未引入新的模型或性能修改。
 
 本地完整记录：`data/benchmarks/reissue_0.1.0.json`，下载包与自动源码包：`data/benchmarks/reissue_0.1.0_published/`。旧记录与备份保留在 data 中，均不进入 Git。
+
+## README 插图、拓扑缓存与 kernel 评估（2026-10-05）
+
+本轮修改保留在 optimize 工作区，尚未提交、推送或发布；版本仍为 0.1.0，CHANGELOG 加入 Unreleased。
+中文报告仍只用于开发分支，README、公开文档、脚本和代码为英文。TODO 已更新完成项与生产 kernel 的剩余范围。
+
+### 插图可读性
+
+四张 GIF 已重新渲染并替换 doc 资产，README 改为逐张全宽展示，避免三列表格缩小模型和图例。
+轴／anchor／compose 为 960×640、48 帧、10 fps；Error Correction 为 960×600、101 帧，保持不透明 surface。
+已检查每张首／中／末帧及四分之一／四分之三帧，无模型裁切，图例清晰，摄像机极值保留有效视角。
+记录为 data/benchmarks/illustration_qa.json 及 *_readable_qa.png。
+
+显示旋转使双手直立，不改变 MANO 坐标或 pose；镜头采用有界正交扫视。Compose 食指以金色高亮，
+只显示食指三个关节的轴，斜视角可看到 MCP/PIP/DIP 90 度弯曲，原 MCP spread 30 度保持不变。
+Anchor 示例每手 32 个紫色点，突出 anchor 0 及其 barycentric 插值来源三角形。
+Error Correction 在 optimizer update 后重新计算渲染姿态／loss，修正旧图中迭代标签与状态错位的问题。
+脚本 docstring、scripts/README.md 和主 README 的生成命令及图注均已更新。
+
+### UpSampleLayer 缓存：已实现，收益仅限重复细分
+
+旧实现每次 forward 将 faces 搬到 CPU，逐 batch 用 Python 重建边字典，再上传拓扑。
+新实现缓存唯一边和四个子面的索引；共享 expand 拓扑只建立一次，用 nonpersistent long buffers 随设备移动。
+原双参数接口按 faces identity／普通 in-place version／vertex_count 自动失效；prepare 快照后可调用 layer(vertices)。
+快照后源 faces 编辑不改变结果，需主动重新 prepare；.data／外部存储编辑绕过 version，也需显式更新。
+没有 version counter 的 inference faces 使用 prepare 快照。缓存只保留一个拓扑，可 clear_cache，checkpoint 不包含缓存。
+返回 faces 拥有独立存储；保持共享边顺序、子面 winding 和可微分 midpoint interpolation。
+
+RTX 4090／PyTorch 2.11／4 CPU threads，MANO 右手 open-wrist 778 vertices／1538 faces；
+五组交替计时，输出与 c936b59 逐值一致。下表单位 ms，计时不包含 MANO forward：
+
+| Device | Batch | 旧实现 | 自动缓存 | prepare 快照 |
+| --- | --- | --- | --- | --- |
+| CPU | 1 | 27.491 | 0.437 | 0.432 |
+| CPU | 32 | 876.458 | 2.537 | 2.541 |
+| CPU | 128 | 3515.005 | 9.455 | 9.438 |
+| CUDA | 1 | 27.628 | 0.228 | 0.223 |
+| CUDA | 32 | 874.356 | 0.239 | 0.227 |
+| CUDA | 128 | 3539.932 | 0.241 | 0.226 |
+
+首次共享拓扑 prepare 20.7–22.9 ms；单次／不断改变拓扑时仍需支付这笔开销。
+大 batch 的极大倍率主要消除了旧实现对相同拓扑逐 batch 重复遍历，不代表 MANO GPU 数学计算加速。
+检索当前仓库和已审计的下游，未发现 UpSampleLayer 在既有 forward／fitting 中使用，因此普通 fitting 直接收益为零。
+这项实现难度低，适合重复渲染／高密度网格／依赖细分的任务，已经落地。
+数据及 hash 为 data/benchmarks/upsample_cache.json；API 见 doc/features.md，复现说明见 scripts/README.md。
+
+### Triton 与 C++/CUDA：原型与评估完成，生产后端未接入
+
+独立 scripts/benchmark_kernels.py 实现两个 contiguous CUDA float32 Triton 原型：
+skin forward 保持原 PyTorch backward；axis-angle rotation forward 仅用于 no-grad inference，没有 backward。
+它们不被核心包导入，不改变默认 eager，也没有新增强制依赖。CUDA profile 验证 rotation launches 28→1、skin 3→1。
+
+相同冻结 MANO_Poses targets／初始化／Adam／reference basis，两轮六组交替测量 B1/128/1024，
+覆盖局部 eager／compile／Triton forward、完整 MANO forward／backward／inference、有无 anatomy 的完整 100 步 fitting。
+计时排除编译／JIT 启动、加载、构造、reset、warmup 和质量检查，保留 Python launch 开销。
+
+| Batch | 第一轮完整 inference eager／rotation Triton（ms） | 第二轮（ms） | 延迟降低 |
+| --- | --- | --- | --- |
+| 1 | 3.720／2.787 | 4.010／3.045 | 24.1–25.1% |
+| 128 | 1.303／0.971 | 3.968／3.009 | 24.2–25.5% |
+| 1024 | 1.302／0.973 | 1.307／0.973 | 25.3–25.5% |
+
+Rotation 局部约 11–13× 的提速不能外推到完整模型，完整 inference 实测约 1.32–1.34×。
+其最大 vertex 差为 4.47e-5 mm；已测零点、近零、两个 Taylor 阈值及较大角度的 forward。
+这不构成任何训练／高阶梯度兼容证据，原型没有 rotation backward。
+
+Skin geometry／pose与shape gradients 完全相同；所有 measured fitting cases 的最终 RMSE／prior／objective 完全相同。
+Skin 完整 forward 在 B1/128 约快 1.4–1.6%，B1024 约慢 2.3–2.4%，完整 fitting 无稳定收益。
+稳定的 B128＋anatomy，两轮 eager/Triton 为 0.819/0.822 s 和 0.820/0.824 s，即略慢约 0.5%。
+共享机器发生明显 host-load transitions；第一轮 B1＋anatomy 各组 eager 范围 1.426–2.337 s、Triton 1.426–2.381 s。
+这些组中 median 差约 19% 不能解释为可复现退化；第二轮 B1024＋prior 也存在同类波动。
+因此不对当前 skin kernel 宣称 fitting 提速，也不凭跨 batch 的绝对时间推断 batch scalability。
+
+当前建议：保留原生默认；可选 Triton rotation inference 有收益，列为 P2，需真实下游 inference 热路径支持。
+训练 rotation kernel 需要单独 backward 与零点 gradgrad／torch.func／compile 验证，收益尚未测定。
+仅将 Python 包装改为 C++ 不会自动融合 GPU 运算；真正 fused CUDA 可以后续评估，但没有实测证明优于 Triton。
+C++/CUDA 目前暂缓，原因是拟合收益不足、构建／分发／维护成本更高，而不是实现不可能。
+
+投入粗估（熟悉本代码的开发者，非承诺）：窄范围可选 Triton inference＋fallback 测试 3–5 工作日；
+训练与高阶／torch.func／多版本覆盖 1–3 周；C++/CUDA backend 与分发 2–4 周。
+困难主要是保留 CPU/MPS、dtype/layout、最低 PyTorch 2.0.1、autograd／JVP／vmap／二阶及编译路径。
+依据 PyTorch [torch.func 扩展要求](https://docs.pytorch.org/docs/2.11/notes/extending.func.html)；
+[官方 C++/CUDA 教程](https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html) 的稳定 ABI 示例最低为 2.10，
+不能覆盖我们 2.0.1 的整个支持区间。没有实际实现 C++/CUDA，TODO 的生产接入仍未勾选。
+
+原始数据及 hash：data/benchmarks/kernel_feasibility.json、kernel_feasibility_repeat.json；
+单独 profile：kernel_launch_probe.json；详细英文方法与结果：doc/benchmark.md。
+
+### 本轮验证
+
+- PyTorch 2.11 全量回归：168 passed，18 个已核实的上游首次 JVP 初始化 warning；当时尚未新增单独 compile/JVP 用例。
+- 最终全部 12 项 upsample 专项：12 passed，覆盖共享边与独立 face winding golden、identity/version 失效、snapshot、输出 ownership、
+  distinct batch、空拓扑、输入检查、long buffer、gradcheck／gradgradcheck／JVP、Dynamo fullgraph 及 CUDA 无 warm CPU transfer。
+- 最终最低环境 PyTorch 2.0.1 全量：163 passed／6 skipped（3 个 CUDA FP16 参数、3 个 CUDA 专项）。
+- prepared UpSample 的 CUDA Inductor fullgraph 实际 forward/backward probe：输出逐值相同，梯度最大差 7.28e-12。
+  这不等于 compiled 二阶／JVP 组合已经验证；那些组合仍需按需测试。
+- 两个新 benchmark 的 CLI help、完整 CPU/CUDA subdivision、两轮 CUDA kernel/model/fitting 数值检查通过。
+- Ruff／diff 检查通过；源代码／公开文档保持英文。所有 licensed data 与原始输出继续留在 ignored data。
+
+18 个 warning 仍是 Torch 内部 JVP 初始化，不是新缓存或新 kernel 引入 manotorch 的弃用调用。
+首次编译 probe 仍可见已独立复现的 Inductor torch._prims_common.check FutureWarning；未屏蔽或修改 site-packages。
+本轮没有改变已发布 tag／master，也没有触发新的远程发布或 CI。
+
+## 2026-10-08：原始 MANO_Poses 注册验证、脚本审计与 QC
+
+### 输入约定与独立准确性
+
+已读取 data/MANO_Poses/README.md 和原始 README/examples，逐个审计 1554 PKL/对应 PLY：31 subjects，895 right、659 left-mirrored，原始注册均为 MANO_RIGHT、ncomps=0。
+使用 48 维 absolute axis-angle（含非零 global rotation）、每注册 10 betas 和 scanner translation；use_pca=False、flat_hand_mean=True、center_idx=None。
+16 个 J_transformed 按 MANO 顺序映射，不能拿 out.joints[:,:16] 代替。本地数据说明原“ManoLayer 没有 translation 输入”已修正。
+原始 v/J_transformed 是独立目标，不是先前 c936b59 生成的冻结 targets。R.npy 与排序 PKL 完全对应；L.npy 用旋转矩阵验证，避免等价 axis-angle 跨 pi 表示造成假差异。
+
+| Device/dtype | Vertex max Euclidean mm | Joint max Euclidean mm | 样本数 |
+| --- | --- | --- | --- |
+| CPU/float32 | 0.00007823 | 0.00006005 | 1554 |
+| CUDA/float32 | 0.00012732 | 0.00010156 | 1554 |
+| CPU/float64 | 0.00001029 | 0.000001831 | 1554 |
+| CUDA/float64 | 0.00001029 | 0.000001831 | 1554 |
+
+全部通过 0.001 mm 门槛。float64 模型 buffer 仍在构造时经历 float32 rounding；不是原始模型数组的全双精度路径。
+独立 NumPy sinc Rodrigues、顺序 FK、homogeneous LBS 重建所有原始注册，最大 coordinate error 1.94e-13 mm。
+CPU/CUDA 全部 float32 forward/backward finite；34 个代表/极值样本的 batching、permutation、shared betas、joints-only outputs/gradients、跨设备检查通过。
+8 个真实姿态的 double 方向有限差分最大差 1.68e-9；零点、Taylor 两个边界、近 pi 的模型二阶导均 finite。
+左模型两种 shapedirs 政策都与各自独立 NumPy 参考一致；corrected 镜像 coordinate residual 0.008993 mm、uncorrected 44.796 mm。
+镜像残差反映左/右模型资产差别，与原始右模型注册准确性分开。此数据不含独立原始左 scanner targets，不替代 FoundationEgo limits/tips 迁移验证。
+
+用户询问为什么不一次输入全部样本后，额外完成 B=1554 单个 batch 的 accuracy/finite backward。CUDA float32 vertex/joint max 为 0.00012794/0.00011515 mm，仍通过。
+最初 chunk=128 是诊断/存储选择，不是 MANOLayer 的 batch 上限。
+
+### 推理与 fitting
+
+28 个真实独立样本 inference cases 已完成：B1/8/32/128/512/1024/1554 × full/joints-only × eager/compile。
+真 inference_mode，十次 warmup，六组旋转顺序、每组 30 calls；构造/加载/transfer/first compile 不计 warm time，另记 source/model hashes 与 CUDA event spans。
+B1554 full mesh eager/compile 为 3.730/1.493 ms；joints-only 为 3.887/0.253 ms；first compiled forward+sync 为各 case 5.66–9.94 s，受磁盘 cache 影响。
+这些是 shared-machine 参考值，不与 README 旧的 autograd/different-input layer workload 混比，也不代表 compiled fitting/二阶兼容已由本次验证。
+
+已做 8 样本 B1/B8 smoke，并完成固定 128 个独立注册 bank 的 16 个正式 eager fitting case：
+B32/B128 × vertices/16 joints × weight 0/1e-4 × 100/300 steps，三组 reset 计时。Bank 覆盖 subjects、极值 shape/articulation；seed=20261008。
+从原参数加 pose 0.05 rad / betas 0.1 / translation 0.005 m 正态扰动；Adam LR .01/.02/.001，foreach=False。
+独立 per-hand coordinate MSE 与 mean anatomy penalty 先逐手计算再 sum，避免 batch mean 改变梯度相对 Adam epsilon 的尺度。
+计时和诊断 replay 分开；threshold 的 actual timestamps 含诊断/host 开销，不冒充纯优化耗时。
+
+B128/300 steps 的 mean per-hand metrics：
+
+| 目标 | Anatomy weight | 目标 RMSE mm | Mesh RMSE mm | 曾达到门槛比例 | Final anatomy mean rad |
+| --- | --- | --- | --- | --- | --- |
+| vertices | 0 | 0.07157 | 0.07157 | 81.25% @ 0.1mm | 0.4601 |
+| 16 joints | 0 | 0.03739 | 0.94249 | 100% @ 1mm | 0.4660 |
+| vertices | 1e-4 | 3.23511 | 3.23511 | 0% @ 0.1mm | 0.01034 |
+| 16 joints | 1e-4 | 2.16763 | 6.62401 | 3.125% @ 1mm | 0.00654 |
+
+B32 质量接近；16 joints 能拟合良好，不代表完整 mesh/latent parameters 唯一恢复。
+1e-4 prior 明显降低 penalty，同时明显损害几何准确性；需先用小 bank 标定 weights，不能把旧 synthetic benchmark 默认权重直接作为全量 fitting 建议。
+B128/300 complete fits vertices 无/有 prior 为 3.319/4.884 s，joints 为 3.216/5.089 s；峰值 extra allocation 最大 17.13 MiB（排除已存活输入/模型/Adam）。
+原始组/分块计时存在明显 shared-host 波动，这些耗时仅参考，不宣称受控的 batch speedup 或 prior overhead。
+用户告知 GPU 被其他 task 占用后，停止新增 GPU 测试；没有后台 GPU benchmark 继续运行。
+新增 B1554 full-bank fitting 尚未启动，等资源空闲再补；现有误差/finite 结果可使用，performance 应在受控资源下重测。
+
+### QC 文档与图册设计
+
+已生成 data/qc/MANO_Poses/registration_qc.png + selection JSON：6 hands × target/reconstruction/error 三列，不透明 solid surface、逐行 matched camera、共享色标。
+用户确认观感；原 scanner-frame errors 先计算，之后仅为显示消除 wrist/global rotation。小 batch 的 float32 rounding 与完整 chunk128 验证略有不同。
+已生成 qc_summary.pdf（覆盖全部1554的统计、稳定性/单批确认、QC preview、128样本fitting），qc_metrics.csv 与 qc_statistics.json。
+CSV 每个注册含全部device/dtype误差、source side、error rank、拟议 atlas 页/行；JSON 含 distributions、fitting geometry/penalty、环境与 SHA-256 references。
+PDF 排版由 Poppler 渲染检查；全文、文件数量和 CSV coverage 检查。
+全量 QC 推荐 A3 portrait PDF，259 个六手×三列 grid pages，另外加统计/索引；filename 排序、subject bookmarks、error-ranked jump index、统一色标、native ≥9pt 标注。
+PNG 按需导出。全量图册目前只完成设计/索引，未渲染259页；synthetic 38 sequences/18947 frames 因没有原始mesh targets，要另做temporal QC。
+
+### scripts 修正与验证
+
+新增 benchmark_registrations.py、render_registration_qc.py、summarize_registration_qc.py 和三项 asset-independent script regressions。
+旧 fitting 曲线补最后一次 optimizer update、threshold schema version2、peak allocation 在diagnostics之前捕获；compare 拒绝混用旧schema。
+indexed cuda:0 同步、旧Torch marker API guard、seeded/interleaved anatomy benchmark、PCA solve 代替逆矩阵、空dataset/invalidhand诊断、notebook工作路径与demo镜头说明已修正。
+最新 scripts/README.md 逐项列出输入/输出/依赖、复现命令与计时边界；旧chumpy/notebook数值执行仍需要独立legacy环境，不宣称已执行notebook。
+
+初次 licensed MANO+CUDA 全量：172 passed/32 warnings。其中18个为已有torch.func/JVP内部 torch.jit.script；新增14个是脚本eager测量无必要调用cudagraph marker、引入Inductor再导入torch.utils.mkldnn内部script_method。
+不涉及manotorch的JIT弃用调用；用仅import torch + cudagraph_mark_step_begin 的独立probe已复现14类warning的路径。
+已限制marker仅用于compiled CUDA；最新三项script regressions在Torch2.11和最低2.0.1均3passed/no warnings；CPU eager fitting CLI/schema2 self-comparison和registration runtime smoke通过。
+原核心18个首次JVP初始化warning仍属PyTorch内部；未屏蔽warnings或修改site-packages。
+所有已有standalone scripts的--help审计通过；新summary CLI在没有reportlab时也能--help。Ruff/diff与publicEnglish检查通过。
+本轮资料留在optimize工作区；Chinese review report仍为development-only，raw licensed data均在ignored data；未更改已发布master/tag或触发远程CI。
+
+### 全量 QC atlas 完成（2026-10-08，后续 GPU 渲染授权）
+
+用户明确要求执行全量图册并使用 GPU，已新增 scripts/render_registration_atlas.py，实际后端为 NVIDIA RTX4090/OpenGL 4.5。
+完成 data/qc/MANO_Poses/registration_atlas.pdf：A3 portrait，259 个六手×三列 grid pages，另含 cover/index 共261页，约99MiB；覆盖所有1554个原始注册。
+固定全量global error scale，opaque lit surfaces、matched orthographic cameras、9–12pt native PDF captions、31 subject bookmarks、top20 error index，共51个可点击index links。
+独立accuracy CSV与本次重建metrics最大差1.36e-20 mm；vertex/joint最大误差仍为0.00012732/0.00010156 mm。
+
+QA 发现两个窗口复用问题并已修正：clear会移除lights，需逐页重新启用light kit；screenshot只在首次自动render，后续需在所有camera设置完显式render，避免最后viewport捕获旧相机buffer。
+已完整重新渲染并逐页强制nonempty/unclipped/matched-bbox gate；4662个模型视窗全部通过，最小边界余量48 pixels，三列最大bbox差2pixels（颜色/抗锯齿）。
+最终PDF261页全部解析，259个grid均6样本/18native filename captions/1张完整1800×2226图像，逐个文件与原始1554 PKL映射一致；31 bookmarks/51links目标页核验通过。
+人工复查cover/index以及grid1/61/130/144/241/259：首/中/末、最大shape/pose及最差误差，无文字/模型裁切与相机错位。
+输出atlas_pages/grid_*.png六张，可用于快速分享；registration_atlas_index.csv包含实际pdf_page/grid_page/row与逐文件hash，registration_atlas.json包含GPU/backend/source/model/PDF/index hashes和渲染检查记录。
+qc_summary.pdf、qc_metrics.csv、qc_statistics.json已更新为completed atlas与实际PDF页号。TODO、README、scripts说明、CHANGELOG、英文benchmark文档同步。
+本次GPU授权用于图册生成，尚未恢复全量fitting或受控performance复测；这些仍在TODO。所有licensed data与PDF保持ignored data，未进行新发布/推送。
+
+### MANO_Poses 左右手自包含 QC（2026-10-08）
+
+按用户要求，完整左/右 poses 各 1554 个保存在 data/qc/MANO_Poses，附 full global axis-angle/betas/scanner trans、目标/重建网格与 joints、NumPy 参考、raw 模型、代码快照、来源与 README。使用官方 L.npy（115 行 canonical vectors 不同，但 rotation matrix delta≤1.99e-14），镜像 global/trans；fix_left_shapedirs=True 且 raw 模型不提前修正。
+
+左右 CPU/CUDA float32/64 全量参考、全部梯度 finite、B1554/chunk/单样本/排列/joints-only 通过。左 CUDA float32 independent-reference vertex / joint max 0.000105672 / 0.000090054 mm；full scanner-frame corrected model mirror residual 0.010575863 mm，未修正 shapedirs 为 50.449993 mm。该口径为 Euclidean 距离，与此前 canonical maximum-coordinate 残差不同；镜像数据不是独立左手扫描 GT。
+
+完整左 atlas 261 页、1554 hands/4662 面板，RTX4090 OpenGL；边界余量≥49px，camera bbox 差≤1px；31 subject bookmarks/51 links。全部页 caption/image 结构验证、首/中/末/最差/shape/pose 极值目视检查通过。两页 left/qc_summary.pdf 区分 implementation/reference 和 asset mirror residual，附 CDF/稳定性与重现说明。原右 atlas/报告保留。
+
+Cached renderer 无 Torch/原始目录依赖；bundle source/model/pose fresh CPU left inference 验证通过（vertex / joint max 0.000086358 / 0.000062730 mm）。使用相对路径 hash 清单核对整包；公开 README/scripts/CHANGELOG 和本地 TODO 已同步。未新增 fitting 或受控 GPU timing，相关 TODO 保留。
+
+### QC 目录与合并报告更正
+
+按用户要求，left/right 数据与结果采用同样子目录；三个最终 PDF 均为 data/qc/MANO_Poses 根目录普通文件。qc_summary.pdf 合并为四页，包含双方准确性/稳定性、CDF、首样本/最大 mirror residual/最大 beta 的成对 QC images，以及原有 right fitting 16-case 表。left previews 仅作180度画面 roll 来对齐指尖方向，不改变数据或测量；两份完整 atlas 字节保持不变，页面索引和 source hashes 保留。旧 summary/provenance 已备份到 ignored data/benchmarks/qc_layout_archive，右原始 audit JSON/CSV 留在 right/。所有读取/重渲染/发布路径与目录 README 已更新为对称结构，旧 right-only summary 工具默认写入独立 benchmark audit 目录以避免覆盖 combined PDF。
+
+### 左手图集展示方向更正
+
+用户发现左 atlas 全部手朝下。原因是右手显示 basis 将模型 x 反射映射为显示 y 反射，左右沿用同一 basis 导致 left 朝下；与 MANO pose 正确性无关。改为 left display-z 轴的 180° proper rotation（det=1），保留 handedness，方向与 right 对齐。所有 1554 left/right 非拇指 MCP center 均在 wrist 上方，min高度约69.85mm。完整 left atlas 采用 GPU 原生重渲染；combined report 新 atlas 不再额外 image-plane roll。原始参数、scanner targets/reference 和量化指标不变。
+
+最终重渲染与核验完成：left atlas 261 页、1554 poses、4662 面板；31 bookmarks/51 links，最小边界49px、最大 matched bbox 差2px。全部1554行误差指标和index CSV字节与重渲染前完全相同，right PDF hash不变。逐页PDF结构检查、六张首/中/末/极值PNG及combined四页报告目视检查通过；新版combined直接使用朝上left原图，不再额外旋转。
+
+### 最终 code-check 与开发分支提交（2026-10-08）
+
+最终检查修正两个问题：UpSampleLayer 在 inference_mode 下建立/迁移的缓存可能无法用于随后训练的 gather backward，现使用普通索引 buffers，新增 CPU/CUDA warmup-to-training 回归；right-only 统计 publisher 的 indexed CUDA CSV 名称现与 benchmark 写入规则一致，cuda:0 的四案例/1554样本 integration 通过。更新 bundle preparation 的后续提示为双 atlas + combined report。
+
+最终本地 licensed MANO + CUDA 全量回归：174 passed，18 个已知上游 PyTorch 首次 JVP 初始化 DeprecationWarning；FutureWarning 作为 error 未失败。没有屏蔽 warning 或修改 PyTorch；全局 -W error 的单独探针在同一上游 JVP 初始化告警处失败，不能宣称整个测试 suite warning-free。Ruff、diff check、QC bundle 60 文件 checksum、wheel build 检查通过。仅提交/推送 optimize 开发分支；模型、数据、PDF 与 TODO 不进入版本控制，开发 report 继续保留在 optimize，未升级版本或新建 release。

@@ -1,19 +1,30 @@
 """Compose a right and a left hand from the same anatomy aligned Euler angles.
 
     uv run python scripts/simple_compose.py                                  # interactive window
-    uv run python scripts/simple_compose.py --gif doc/simple_compose_new.gif # orbiting GIF, rendered off-screen
+    uv run python scripts/simple_compose.py --gif doc/simple_compose_new.gif # camera-sweep GIF, rendered off-screen
 
 The index finger is bent: its MCP joint (1) by pi/6 around the spread axis and pi/2 around the bend axis, its PIP
 and DIP joints (2, 3) by pi/2 around the bend axis. The angles follow one convention for both hands, so the two
-composed hands are mirror images; they are drawn a few centimeters apart. Arrows: red = back (twist), green = up
-(spread), blue = left (bend).
+composed hands are mirror images. The index finger is highlighted in gold, with only its three joint axes drawn.
+An oblique camera sweep reveals the curl; display rotations do not change MANO coordinates or the composed pose.
+Arrows: red = twist, green = spread, blue = bend.
 """
 
 import argparse
 import math
 
 import torch
-from _common import add_axes, add_hand, add_legend, get_device, hand_offset, hands_legend, new_plotter, show_or_record
+from _common import (
+    add_axes,
+    add_hand,
+    add_legend,
+    display_axes,
+    display_points,
+    get_device,
+    hands_legend,
+    new_plotter,
+    show_or_record,
+)
 
 from manotorch.axislayer import AxisLayerFK
 from manotorch.manolayer import ManoLayer
@@ -52,14 +63,17 @@ def main(args):
 
         pose = axis_layer.compose(composed_ee).reshape(1, 48)  # axis-angles, (1, 16 x 3)
         if args.use_pca:  # express the articulation with the 45 PCA components
-            pose[:, 3:] = (pose[:, 3:] - mano_layer.th_hands_mean) @ torch.linalg.inv(mano_layer.th_selected_comps)
+            pose[:, 3:] = torch.linalg.solve(
+                mano_layer.th_selected_comps.T, (pose[:, 3:] - mano_layer.th_hands_mean).T).T
         poses[side] = pose
 
         mano_output = mano_layer(pose)
         T_g_a, _, _ = axis_layer(mano_output.transforms_abs)
-        offset = hand_offset(side)
-        add_hand(pl, mano_output.verts[0].cpu().numpy() + offset, mano_layer.get_mano_closed_faces(), side)
-        add_axes(pl, T_g_a[0, :, :3, 3].cpu().numpy() + offset, T_g_a[0, :, :3, :3].cpu().numpy())
+        highlight = torch.isin(mano_layer.th_weights.argmax(-1), torch.tensor([1, 2, 3], device=device)).cpu().numpy()
+        add_hand(pl, display_points(side, mano_output.verts[0].cpu().numpy()),
+                 mano_layer.get_mano_closed_faces(), side, opacity=1.0, highlight=highlight)
+        add_axes(pl, display_points(side, T_g_a[0, 1:4, :3, 3].cpu().numpy()),
+                 display_axes(side, T_g_a[0, 1:4, :3, :3].cpu().numpy()), mag=0.016)
 
     # mirrored poses share their PCA coefficients; as axis-angles, the y and z components change sign
     mirror = (
@@ -68,13 +82,13 @@ def main(args):
     is_mirror = torch.allclose(poses["left"], poses["right"] * mirror, atol=1e-4)
     print(f"Is the composed left hand the mirror of the right hand? {is_mirror}")
 
-    add_legend(pl, hands_legend())
-    show_or_record(pl, args.gif)
+    add_legend(pl, hands_legend() + [("index finger highlighted; bend = 90 / 90 / 90 deg", "#8C5B00")])
+    show_or_record(pl, args.gif, oblique=0.65, sweep=18.0)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--gif", default=None, help="write an orbiting GIF here instead of opening a window")
+    parser.add_argument("--gif", default=None, help="write a camera-sweep GIF here instead of opening a window")
     parser.add_argument("--no-pca", dest="use_pca", action="store_false", help="feed axis-angles instead of PCA")
     parser.add_argument("--mano-assets-root", default="assets/mano")
     main(parser.parse_args())
